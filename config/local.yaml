@@ -1,0 +1,12 @@
+env : "local"
+filters:
+  protocols :
+    tcp : true
+    udp : true
+    icmp : true
+    dns : true
+  src_ip : ""
+  dst_ip : ""
+  ports : ""
+processor_workers : 8
+

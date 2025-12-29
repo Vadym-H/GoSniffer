@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  gosniffer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gosniffer-dev
+    network_mode: "host"
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_ADMIN
+    security_opt:
+      - apparmor=unconfined
+    volumes:
+      - .:/app
+      - go-modules:/go/pkg/mod
+    stdin_open: true
+    tty: true
+
+volumes:
+  go-modules:
