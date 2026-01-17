@@ -17,6 +17,10 @@ func NewConsoleWriter(compact bool) output.PacketWriter {
 	return &ConsoleWriter{compact: compact}
 }
 
+func (c *ConsoleWriter) SupportsConcurrentWrites() bool {
+	return true
+}
+
 func (c *ConsoleWriter) WritePacket(packet gopacket.Packet, count int) {
 	if c.compact {
 		PrintPacketCompact(packet, count)

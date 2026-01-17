@@ -6,4 +6,5 @@ import "github.com/google/gopacket"
 type PacketWriter interface {
 	WritePacket(packet gopacket.Packet, count int)
 	Close() error
+	SupportsConcurrentWrites() bool
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Vadym-H/GoSniffer/internal/config"
+	"github.com/Vadym-H/GoSniffer/internal/lib/logger/sl"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/BpfFilter"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/pcap"
@@ -23,7 +24,7 @@ type captureStats struct {
 	logInterval time.Duration
 }
 
-var BufferFullCount int = 0
+var BufferFullCount = 0
 
 func StartSniffing(device string, c *config.BpfFilters, log *slog.Logger) (*PacketStream, error) {
 	const op = "capture.StartSniffing"
@@ -47,7 +48,7 @@ func StartSniffing(device string, c *config.BpfFilters, log *slog.Logger) (*Pack
 }
 
 func openDevice(device string, c *config.BpfFilters, log *slog.Logger) (*pcap.Handle, error) {
-	handle, err := pcap.OpenLive(device, 65536, false, pcap.BlockForever)
+	handle, err := pcap.OpenLive(device, 128, false, pcap.BlockForever)
 	if err != nil {
 		log.Error("Capturing failed", err)
 		return nil, fmt.Errorf("capturing failed: %w", err)
@@ -124,36 +125,72 @@ func checkAndLogStats(stats *captureStats, log *slog.Logger) {
 	}
 }
 
-func ChoosingDevice(log *slog.Logger, deviceNum int) (string, error) {
-	const op = "sniffer.ChoosingDevice"
+func ListDevices(log *slog.Logger) ([]string, error) {
+	const op = "capture.ListDevices"
+	log = log.With(
+		slog.String("op", op))
+	devs, err := pcap.FindAllDevs()
+	if err != nil {
+		log.Error("Failed to find network devices", sl.Err(err))
+		return nil, err
+	}
+
+	var devices []string
+	for _, d := range devs {
+		devices = append(devices, d.Name)
+	}
+	return devices, nil
+}
+
+func ValidateDevice(name string, log *slog.Logger) (string, error) {
+	const op = "capture.ValidateDevice"
 	log = log.With(
 		slog.String("op", op),
 	)
-	devices, err := pcap.FindAllDevs()
+	devs, err := pcap.FindAllDevs()
 	if err != nil {
-		log.Error("ERROR: Failed to find network devices: %v", err)
+		log.Error("Failed to find network devices", sl.Err(err))
 		return "", err
 	}
-
-	// Display available devices
-	fmt.Println("Available network devices:")
-	for i, device := range devices {
-		fmt.Printf("%d. %s", i, device.Name)
-		if device.Description != "" {
-			fmt.Printf(" (%s)", device.Description)
-		}
-		fmt.Println()
-
-		// Show IP addresses for this device
-		for _, address := range device.Addresses {
-			fmt.Printf("   IP: %s\n", address.IP)
+	for _, d := range devs {
+		if d.Name == name {
+			return d.Name, nil
 		}
 	}
-
-	if len(devices) == 0 {
-		log.Warn("WARNING: No network devices found")
-		return "", fmt.Errorf("no devices available")
-	}
-	device := devices[deviceNum].Name
-	return device, nil
+	log.Warn("Device not found", slog.String("device", name))
+	return "", fmt.Errorf("device not found")
 }
+
+//func ChoosingDevice(log *slog.Logger, deviceNum int) (string, error) {
+//	const op = "sniffer.ChoosingDevice"
+//	log = log.With(
+//		slog.String("op", op),
+//	)
+//	devices, err := pcap.FindAllDevs()
+//	if err != nil {
+//		log.Error("ERROR: Failed to find network devices: %v", err)
+//		return "", err
+//	}
+//
+//	// Display available devices
+//	fmt.Println("Available network devices:")
+//	for i, device := range devices {
+//		fmt.Printf("%d. %s", i, device.Name)
+//		if device.Description != "" {
+//			fmt.Printf(" (%s)", device.Description)
+//		}
+//		fmt.Println()
+//
+//		// Show IP addresses for this device
+//		for _, address := range device.Addresses {
+//			fmt.Printf("   IP: %s\n", address.IP)
+//		}
+//	}
+//
+//	if len(devices) == 0 {
+//		log.Warn("WARNING: No network devices found")
+//		return "", fmt.Errorf("no devices available")
+//	}
+//	device := devices[deviceNum].Name
+//	return device, nil
+//}

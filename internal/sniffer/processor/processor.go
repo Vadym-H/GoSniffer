@@ -17,10 +17,16 @@ type PacketProcessor struct {
 	stopChan    chan struct{}
 	packetCount atomic.Int64
 	writer      output.PacketWriter
+	packetChan  chan gopacket.Packet
 }
 
 func NewPacketProcessor(numWorkers int, writer output.PacketWriter, log *slog.Logger) *PacketProcessor {
 	const op = "sniffer.processor.NewPacketProcessor"
+
+	if !writer.SupportsConcurrentWrites() {
+		log.Info("Writer requires sequential processing, using 1 worker")
+		numWorkers = 1
+	}
 
 	return &PacketProcessor{
 		numWorkers: numWorkers,
@@ -30,20 +36,21 @@ func NewPacketProcessor(numWorkers int, writer output.PacketWriter, log *slog.Lo
 	}
 }
 
-func (p *PacketProcessor) Start(stream *capture.PacketStream) {
+func (p *PacketProcessor) Start(packetChan chan gopacket.Packet) {
 	const op = "sniffer.processor.Start"
 	log := p.log.With(slog.String("op", op))
 
+	p.packetChan = packetChan
 	log.Info("Starting packet processor", slog.Int("workers", p.numWorkers))
 
 	// Error handler goroutine
-	p.wg.Add(1)
-	go p.handleErrors(stream)
+	//p.wg.Add(1)
+	//go p.handleErrors(packetChan)
 
 	// Spawn worker goroutines
 	for i := 0; i < p.numWorkers; i++ {
 		p.wg.Add(1)
-		go p.worker(i, stream.Packets)
+		go p.worker(i, packetChan)
 	}
 }
 
