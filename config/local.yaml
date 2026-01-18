@@ -1,16 +1,16 @@
-env : "local"
+env: "local"
 http_server:
   address: "localhost:8080"
   timeout: 4s
   idle_timeout: 60s
 filters:
-  protocols :
-    tcp : true
-    udp : true
-    icmp : true
-    dns : true
-  src_ip : ""
-  dst_ip : ""
-  ports : ""
-processor_workers : 8
+  protocols:
+    tcp: true
+    udp: true
+    icmp: true
+    dns: true
+  src_ip: ""
+  dst_ip: ""
+  ports: ""
+processor_workers: 8
 

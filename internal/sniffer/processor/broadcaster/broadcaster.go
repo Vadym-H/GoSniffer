@@ -3,6 +3,7 @@ package broadcaster
 import (
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/capture"
 	"github.com/google/gopacket"
@@ -15,7 +16,7 @@ type PacketBroadcaster struct {
 	wg          sync.WaitGroup
 	stopChan    chan struct{}
 	log         *slog.Logger
-	droppedPkts int64
+	droppedPkts atomic.Int64
 }
 
 func NewPacketBroadcaster(source *capture.PacketStream, log *slog.Logger) *PacketBroadcaster {
@@ -86,10 +87,10 @@ func (b *PacketBroadcaster) broadcastPacket(packet gopacket.Packet) {
 			// Successfully sent
 		default:
 			// Consumer channel is full - packet dropped for this consumer
-			b.droppedPkts++
+			b.droppedPkts.Add(1)
 			b.log.Warn("Consumer channel full, packet dropped",
 				slog.Int("consumerID", i),
-				slog.Int64("totalDropped", b.droppedPkts))
+				slog.Int64("totalDropped", b.droppedPkts.Load()))
 		}
 	}
 }
@@ -108,10 +109,10 @@ func (b *PacketBroadcaster) closeAllConsumers() {
 func (b *PacketBroadcaster) Stop() {
 	close(b.stopChan)
 	b.wg.Wait()
-	b.log.Info("Broadcaster stopped", slog.Int64("droppedPackets", b.droppedPkts))
+	b.log.Info("Broadcaster stopped", slog.Int64("droppedPackets", b.droppedPkts.Load()))
 }
 
 // GetDroppedPacketCount returns the number of packets dropped due to full buffers
 func (b *PacketBroadcaster) GetDroppedPacketCount() int64 {
-	return b.droppedPkts
+	return b.droppedPkts.Load()
 }

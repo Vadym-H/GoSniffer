@@ -18,6 +18,7 @@ type PacketProcessor struct {
 	packetCount atomic.Int64
 	writer      output.PacketWriter
 	packetChan  chan gopacket.Packet
+	stream      *capture.PacketStream
 }
 
 func NewPacketProcessor(numWorkers int, writer output.PacketWriter, log *slog.Logger) *PacketProcessor {
@@ -36,16 +37,17 @@ func NewPacketProcessor(numWorkers int, writer output.PacketWriter, log *slog.Lo
 	}
 }
 
-func (p *PacketProcessor) Start(packetChan chan gopacket.Packet) {
+func (p *PacketProcessor) Start(packetChan chan gopacket.Packet, stream *capture.PacketStream) {
 	const op = "sniffer.processor.Start"
 	log := p.log.With(slog.String("op", op))
 
 	p.packetChan = packetChan
+	p.stream = stream
 	log.Info("Starting packet processor", slog.Int("workers", p.numWorkers))
 
-	// Error handler goroutine
-	//p.wg.Add(1)
-	//go p.handleErrors(packetChan)
+	// Start error handler goroutine
+	p.wg.Add(1)
+	go p.handleErrors(stream)
 
 	// Spawn worker goroutines
 	for i := 0; i < p.numWorkers; i++ {

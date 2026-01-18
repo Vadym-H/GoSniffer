@@ -21,16 +21,22 @@ func (c *ConsoleWriter) SupportsConcurrentWrites() bool {
 	return true
 }
 
+func (c *ConsoleWriter) Stop() error {
+	// Console writer doesn't need to do anything on stop
+	return nil
+}
+
+func (c *ConsoleWriter) Close() error {
+	// Console writer doesn't need to do anything on close
+	return nil
+}
+
 func (c *ConsoleWriter) WritePacket(packet gopacket.Packet, count int) {
 	if c.compact {
 		PrintPacketCompact(packet, count)
 	} else {
 		PrintPacket(packet, count)
 	}
-}
-
-func (c *ConsoleWriter) Close() error {
-	return nil // No cleanup needed for console
 }
 
 func PrintPacket(packet gopacket.Packet, count int) {

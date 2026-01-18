@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/Vadym-H/GoSniffer/internal/config"
 	"github.com/Vadym-H/GoSniffer/internal/http-server/auth/session"
@@ -13,10 +14,11 @@ import (
 	mwLogger "github.com/Vadym-H/GoSniffer/internal/http-server/middleware/logger"
 	sessionMiddleware "github.com/Vadym-H/GoSniffer/internal/http-server/middleware/session"
 	"github.com/Vadym-H/GoSniffer/internal/lib/logger/sl"
-	"github.com/Vadym-H/GoSniffer/internal/logger/setup"
+	setuplogger "github.com/Vadym-H/GoSniffer/internal/logger/setup"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/capture"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/toConsole"
+	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/toFife/pcapwriter"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/processor"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/processor/broadcaster"
 	"github.com/go-chi/chi/v5"
@@ -70,58 +72,53 @@ func main() {
 		WriteTimeout:      cfg.HTTPServer.Timeout,
 		IdleTimeout:       cfg.HTTPServer.IdleTimeout,
 	}
-	if err := srv.ListenAndServe(); err != nil {
-		log.Error("Failed to start server", sl.Err(err))
-	}
 
-	stream, err := capture.StartSniffing("eth0", filters, log)
-	if err != nil {
-		log.Error("Failed to start sniffing", slog.String("error", err.Error()))
-		return
-	}
+	// Start HTTP server in goroutine so capture can run
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error("Failed to start server", sl.Err(err))
+		}
+	}()
 
-	broadcaster := broadcaster.NewPacketBroadcaster(stream, log)
+	log.Info("HTTP server started", slog.String("addr", cfg.Address))
 
-	consoleWriter := toConsole.NewConsoleWriter(true)
+	// Start packet capture
+	go func() {
+		stream, err := capture.StartSniffing("wlo1", &cfg.Filters, log)
+		if err != nil {
+			log.Error("Failed to start sniffing", slog.String("error", err.Error()))
+			return
+		}
+		broadcaster := broadcaster.NewPacketBroadcaster(stream, log)
 
-	consoleProcessor := processor.NewPacketProcessor(4, consoleWriter, log)
+		consoleWriter := toConsole.NewConsoleWriter(true)
 
-	consoleChan := broadcaster.RegisterConsumer(10000)
-	
-	broadcaster.Start()
-	consoleProcessor.Start(consoleChan)
+		pcapWriter, err := pcapwriter.NewPcapWriter("capture.pcap", 30*time.Second, log)
+		if err != nil {
+			log.Error("Failed to create PCAP writer", slog.String("error", err.Error()))
+			return
+		}
 
-	//device, err := capture.ChoosingDevice(log, 0) //TODO: Implement real choosing the device
-	//if err != nil {
-	//	log.Error("Failed to find network devices", slog.String("error", err.Error()))
-	//	return
-	//}
-	//
-	//stream, err := capture.StartSniffing(device, &cfg.Filters, log)
-	//if err != nil {
-	//	log.Error("Failed to start sniffing", slog.String("error", err.Error()))
-	//	return
-	//}
-	//
-	//log.Info("Packet capture started. Press Ctrl+C to stop...")
-	//
-	//// Start packet processor with worker pool
-	//numWorkers := cfg.ProcessorWorkers
-	//if numWorkers == 0 {
-	//	numWorkers = 4 // Default to 4 workers
-	//}
-	//writer := toConsole.NewConsoleWriter(false)
-	//
-	//proc := processor.NewPacketProcessor(numWorkers, writer, log)
-	//proc.Start(stream)
+		consoleProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, consoleWriter, log)
 
-	//sigChan := make(chan os.Signal, 1)
-	//signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	//<-sigChan
-	//
-	//log.Info("Stopping capture...")
-	//stream.Stop <- true
-	//proc.Stop()
+		pcapProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, pcapWriter, log)
+
+		consoleChan := broadcaster.RegisterConsumer(10000)
+		pcapChan := broadcaster.RegisterConsumer(10000)
+
+		broadcaster.Start()
+		consoleProcessor.Start(consoleChan, stream)
+		pcapProcessor.Start(pcapChan, stream)
+
+		time.Sleep(15 * time.Second)
+
+		pcapProcessor.Stop()
+		broadcaster.Stop()
+		consoleWriter.Stop()
+
+	}()
+
+	select {}
 
 	log.Info("GoSniffer stopped successfully")
 }
