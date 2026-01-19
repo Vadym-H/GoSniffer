@@ -92,7 +92,7 @@ func PrintPacket(packet gopacket.Packet, count int) {
 	// ICMP Layer
 	if icmpLayer := packet.Layer(layers.LayerTypeICMPv4); icmpLayer != nil {
 		icmp := icmpLayer.(*layers.ICMPv4)
-		fmt.Printf("ICMPv4: Type=%s Code=%d\n", icmp.TypeCode.Type(), icmp.TypeCode.Code())
+		fmt.Printf("ICMPv4: Type=%d Code=%d\n", icmp.TypeCode.Type(), icmp.TypeCode.Code())
 	}
 
 	// Application Layer

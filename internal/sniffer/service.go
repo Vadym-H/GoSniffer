@@ -4,9 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
-
-	"github.com/Vadym-H/GoSniffer/internal/sniffer/capture"
-	"github.com/Vadym-H/GoSniffer/internal/sniffer/processor"
 )
 
 type Service struct {
@@ -14,9 +11,6 @@ type Service struct {
 	running bool
 
 	device string
-
-	stream *capture.PacketStream
-	proc   *processor.PacketProcessor
 	log    *slog.Logger
 }
 

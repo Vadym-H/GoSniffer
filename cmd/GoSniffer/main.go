@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -17,7 +18,10 @@ import (
 	setuplogger "github.com/Vadym-H/GoSniffer/internal/logger/setup"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/capture"
+	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/filemanager"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/toConsole"
+	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/toFife/csvwriter"
+	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/toFife/jsonwriter"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/toFife/pcapwriter"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/processor"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/processor/broadcaster"
@@ -31,7 +35,8 @@ func main() {
 
 	log.Info("Starting GoSniffer...")
 
-	//HTTP server
+	// HTTP Server Setup
+
 	store := session.NewSessionStore()
 	snifferService := sniffer.New(log)
 	authHandler := login.NewAuthHandler(cfg, store)
@@ -40,17 +45,18 @@ func main() {
 
 	router := chi.NewRouter()
 
-	//Middleware
-
+	// Middleware Registration
 	router.Use(middleware.RequestID)
 	router.Use(middleware.RealIP)
 	router.Use(mwLogger.New(log))
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.URLFormat)
 
+	// Public Routes
 	router.Post("/login", authHandler.Login)
 	router.Post("/logout", authHandler.Logout)
 
+	// Protected Routes
 	router.Route("/sniffer", func(r chi.Router) {
 		r.Use(sessionMiddleware.AuthMiddleware(store))
 
@@ -75,54 +81,105 @@ func main() {
 
 	// Start HTTP server in goroutine so capture can run
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("Failed to start server", sl.Err(err))
 		}
 	}()
 
 	log.Info("HTTP server started", slog.String("addr", cfg.Address))
 
-	// Start packet capture
+	// Initialize File Manager
+	fm, err := filemanager.NewFileManager(log)
+	if err != nil {
+		log.Error("Failed to initialize file manager", sl.Err(err))
+		return
+	}
+
+	// Packet Capture and Writer Testing
+
+	interfaceName := "wlo1" // TODO: Get the real interface name
+
 	go func() {
-		stream, err := capture.StartSniffing("wlo1", &cfg.Filters, log)
+		stream, err := capture.StartSniffing(interfaceName, &cfg.Filters, log)
 		if err != nil {
 			log.Error("Failed to start sniffing", slog.String("error", err.Error()))
 			return
 		}
 		broadcaster := broadcaster.NewPacketBroadcaster(stream, log)
 
+		// Console Writer Setup
 		consoleWriter := toConsole.NewConsoleWriter(true)
+		consoleProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, consoleWriter, log)
 
-		pcapWriter, err := pcapwriter.NewPcapWriter("capture.pcap", 30*time.Second, log)
+		// PCAP Writer Setup
+		pcapWriter, err := pcapwriter.NewPcapWriter(interfaceName, 30*time.Second, log, fm)
 		if err != nil {
 			log.Error("Failed to create PCAP writer", slog.String("error", err.Error()))
 			return
 		}
-
-		consoleProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, consoleWriter, log)
-
 		pcapProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, pcapWriter, log)
 
+		// CSV Writer Setup
+		csvWriter, err := csvwriter.NewCSVWriter(interfaceName, 30*time.Second, log, fm)
+		if err != nil {
+			log.Error("Failed to create CSV writer", slog.String("error", err.Error()))
+			return
+		}
+		csvProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, csvWriter, log)
+
+		// JSON Writer Setup
+		jsonWriter, err := jsonwriter.NewJSONWriter(interfaceName, 30*time.Second, log, fm)
+		if err != nil {
+			log.Error("Failed to create JSON writer", slog.String("error", err.Error()))
+			return
+		}
+		jsonProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, jsonWriter, log)
+
+		// Register Consumers and Start Processing
 		consoleChan := broadcaster.RegisterConsumer(10000)
 		pcapChan := broadcaster.RegisterConsumer(10000)
+		csvChan := broadcaster.RegisterConsumer(10000)
+		jsonChan := broadcaster.RegisterConsumer(10000)
 
 		broadcaster.Start()
 		consoleProcessor.Start(consoleChan, stream)
 		pcapProcessor.Start(pcapChan, stream)
+		csvProcessor.Start(csvChan, stream)
+		jsonProcessor.Start(jsonChan, stream)
 
-		time.Sleep(15 * time.Second)
+		log.Info("All packet processors started",
+			slog.String("console_writer", "active"),
+			slog.String("pcap_writer", "active"),
+			slog.String("csv_writer", "active"),
+			slog.String("json_writer", "active"))
 
+		// Run for 30 seconds
+		time.Sleep(30 * time.Second)
+
+		// Graceful Shutdown
+
+		log.Info("Stopping packet processors...")
+
+		jsonProcessor.Stop()
+		csvProcessor.Stop()
 		pcapProcessor.Stop()
 		broadcaster.Stop()
 		consoleWriter.Stop()
 
+		// Stop the packet capture loop
+		log.Info("Stopping packet capture...")
+		stream.Stop <- true
+
+		// Give goroutines time to finish
+		time.Sleep(1 * time.Second)
+
+		log.Info("All packet processors stopped successfully")
+
 	}()
 
 	select {}
-
-	log.Info("GoSniffer stopped successfully")
 }
 
-//TODO: Implement saving packets to files (PCAP, JSON, CSV), and storing them on S3 server
-//TODO: Implement Prometheus exporter(export monitoring metrics)
-//TODO: Implement Web server UI
+// TODO: Implement saving packets to files (PCAP, JSON, CSV)
+// TODO: Implement Prometheus exporter(export monitoring metrics)
+// TODO: Implement Web server UI

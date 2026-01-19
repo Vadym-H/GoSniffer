@@ -1,0 +1,85 @@
+package csvwriter
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+)
+
+// closeInternal handles the actual cleanup logic
+// Must be called with the mutex already locked
+func (w *CSVWriter) closeInternal() error {
+	w.Stopped = true
+	w.Cancel()
+
+	if w.File != nil {
+		elapsed := time.Since(w.StartTime)
+		avgPacketSize := int64(0)
+		packetsPerSec := float64(0)
+
+		if w.packetCount > 0 {
+			avgPacketSize = w.bytesWritten / int64(w.packetCount)
+		}
+
+		if elapsed.Seconds() > 0 {
+			packetsPerSec = float64(w.packetCount) / elapsed.Seconds()
+		}
+
+		// Flush any remaining data
+		w.Writer.Flush()
+		if err := w.Writer.Error(); err != nil {
+			w.Log.Error("Failed to flush CSV writer",
+				slog.String("filename", w.Filename),
+				slog.String("error", err.Error()))
+		} else {
+			w.Log.Debug("CSV writer flushed successfully",
+				slog.String("filename", w.Filename))
+		}
+
+		// Sync to ensure all data is written to disk
+		if err := w.File.Sync(); err != nil {
+			w.Log.Error("Failed to sync CSV file to disk",
+				slog.String("filename", w.Filename),
+				slog.String("error", err.Error()))
+		} else {
+			w.Log.Debug("CSV file synced to disk successfully",
+				slog.String("filename", w.Filename))
+		}
+
+		w.Log.Info("Closing CSV file",
+			slog.String("filename", w.Filename),
+			slog.Int("total_packets", w.packetCount),
+			slog.Int64("total_bytes", w.bytesWritten),
+			slog.Int64("avg_packet_size", avgPacketSize),
+			slog.Float64("packets_per_sec", packetsPerSec),
+			slog.Duration("total_duration", elapsed))
+
+		if err := w.File.Close(); err != nil {
+			w.Log.Error("Failed to close CSV file",
+				slog.String("filename", w.Filename),
+				slog.String("error", err.Error()))
+			return fmt.Errorf("failed to close CSV file: %w", err)
+		}
+		w.Log.Debug("CSV file handle closed",
+			slog.String("filename", w.Filename))
+		w.File = nil
+		w.Writer = nil
+	} else {
+		w.Log.Warn("Close() called but file handle is already nil")
+	}
+	return nil
+}
+
+// GetContext returns the writer's context (useful for monitoring expiration)
+func (w *CSVWriter) GetContext() context.Context {
+	return w.Ctx
+}
+
+// GetStats returns current statistics
+// Returns: packets written, bytes written, elapsed time
+func (w *CSVWriter) GetStats() (packets int, bytes int64, elapsed time.Duration) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.packetCount, w.bytesWritten, time.Since(w.StartTime)
+}

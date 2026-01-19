@@ -72,20 +72,3 @@ func (w *PcapWriter) GetStats() (packets int, bytes int64, elapsed time.Duration
 	defer w.mu.Unlock()
 	return w.packetCount, w.bytesWritten, time.Since(w.startTime)
 }
-
-// startDurationTimer starts a goroutine that auto-stops capture after duration
-func (w *PcapWriter) startDurationTimer(duration time.Duration) {
-	go func() {
-		timer := time.NewTimer(duration)
-		defer timer.Stop()
-
-		select {
-		case <-timer.C:
-			w.log.Debug("Duration timer expired, auto-stopping capture")
-			w.Stop()
-		case <-w.ctx.Done():
-			w.log.Debug("Context cancelled, exiting duration timer goroutine")
-			return
-		}
-	}()
-}

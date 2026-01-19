@@ -6,25 +6,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/filemanager"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
 
 // TestStopNonBlocking tests that Stop() doesn't block indefinitely
 func TestStopNonBlocking(t *testing.T) {
-	// Create a temporary file
-	tmpFile, err := os.CreateTemp("", "test-*.pcap")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
-
 	// Create logger
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
+	// Create file manager
+	fm, err := filemanager.NewFileManager(log)
+	if err != nil {
+		t.Fatalf("Failed to create file manager: %v", err)
+	}
+
 	// Create PCAP writer
-	writer, err := NewPcapWriter(tmpFile.Name(), 0, log)
+	writer, err := NewPcapWriter("lo", 0, log, fm)
 	if err != nil {
 		t.Fatalf("Failed to create PCAP writer: %v", err)
 	}
@@ -50,16 +49,15 @@ func TestStopNonBlocking(t *testing.T) {
 
 // TestStopWithConcurrentWrites tests Stop() while packets are being written
 func TestStopWithConcurrentWrites(t *testing.T) {
-	tmpFile, err := os.CreateTemp("", "test-*.pcap")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
-
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	writer, err := NewPcapWriter(tmpFile.Name(), 0, log)
+	// Create file manager
+	fm, err := filemanager.NewFileManager(log)
+	if err != nil {
+		t.Fatalf("Failed to create file manager: %v", err)
+	}
+
+	writer, err := NewPcapWriter("lo", 0, log, fm)
 	if err != nil {
 		t.Fatalf("Failed to create PCAP writer: %v", err)
 	}
@@ -104,16 +102,15 @@ func TestStopWithConcurrentWrites(t *testing.T) {
 
 // TestNonBlockingClose tests that Close() doesn't block
 func TestNonBlockingClose(t *testing.T) {
-	tmpFile, err := os.CreateTemp("", "test-*.pcap")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
-
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	writer, err := NewPcapWriter(tmpFile.Name(), 0, log)
+	// Create file manager
+	fm, err := filemanager.NewFileManager(log)
+	if err != nil {
+		t.Fatalf("Failed to create file manager: %v", err)
+	}
+
+	writer, err := NewPcapWriter("lo", 0, log, fm)
 	if err != nil {
 		t.Fatalf("Failed to create PCAP writer: %v", err)
 	}
@@ -172,17 +169,16 @@ func createMockPacket() gopacket.Packet {
 
 // TestStopWithDurationExpired tests Stop() behavior when duration expires
 func TestStopWithDurationExpired(t *testing.T) {
-	tmpFile, err := os.CreateTemp("", "test-*.pcap")
-	if err != nil {
-		t.Fatalf("Failed to create temp file: %v", err)
-	}
-	defer os.Remove(tmpFile.Name())
-	tmpFile.Close()
-
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
+	// Create file manager
+	fm, err := filemanager.NewFileManager(log)
+	if err != nil {
+		t.Fatalf("Failed to create file manager: %v", err)
+	}
+
 	// Create writer with 100ms duration
-	writer, err := NewPcapWriter(tmpFile.Name(), 100*time.Millisecond, log)
+	writer, err := NewPcapWriter("lo", 100*time.Millisecond, log, fm)
 	if err != nil {
 		t.Fatalf("Failed to create PCAP writer: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/output"
+	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/filemanager"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
@@ -79,7 +80,7 @@ func (w *PcapWriter) WritePacket(pkt gopacket.Packet, count int) {
 }
 
 func (w *PcapWriter) SupportsConcurrentWrites() bool {
-	return false // PCAP requires sequential writes
+	return true // Safe with mutex protection
 }
 
 // Stop manually stops packet capture before duration expires
@@ -118,16 +119,24 @@ func (w *PcapWriter) Close() error {
 
 // NewPcapWriter creates a writer that captures for the specified duration.
 // If duration is 0, it captures indefinitely until manually stopped via Stop().
-func NewPcapWriter(filename string, duration time.Duration, log *slog.Logger) (output.PacketWriter, error) {
+// interfaceName is included in the filename (e.g., capture_2024-01-15_14-30-25.pcap)
+func NewPcapWriter(interfaceName string, duration time.Duration, log *slog.Logger, fm *filemanager.FileManager) (output.PacketWriter, error) {
 	log.Debug("Initializing PCAP writer",
-		slog.String("filename", filename),
+		slog.String("interface", interfaceName),
 		slog.Duration("duration", duration))
 
-	// Check if file already exists
-	if _, err := os.Stat(filename); err == nil {
-		log.Warn("PCAP file already exists, it will be overwritten",
-			slog.String("filename", filename))
+	// Get file path from file manager (handles cleanup if needed)
+	filename, err := fm.GetFilePath("pcap")
+	if err != nil {
+		log.Error("Failed to get PCAP file path from FileManager",
+			slog.String("interface", interfaceName),
+			slog.String("error", err.Error()))
+		return nil, fmt.Errorf("failed to get pcap file path: %w", err)
 	}
+
+	log.Info("PCAP file path generated",
+		slog.String("filename", filename),
+		slog.String("interface", interfaceName))
 
 	// Create the output file
 	file, err := os.Create(filename)
