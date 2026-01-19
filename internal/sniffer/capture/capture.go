@@ -50,7 +50,7 @@ func StartSniffing(device string, c *config.BpfFilters, log *slog.Logger) (*Pack
 func openDevice(device string, c *config.BpfFilters, log *slog.Logger) (*pcap.Handle, error) {
 	handle, err := pcap.OpenLive(device, 128, false, pcap.BlockForever)
 	if err != nil {
-		log.Error("Capturing failed", err)
+		log.Error("Capturing failed", sl.Err(err))
 		return nil, fmt.Errorf("capturing failed: %w", err)
 	}
 
