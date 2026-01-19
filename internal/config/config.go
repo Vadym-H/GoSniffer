@@ -13,6 +13,7 @@ import (
 type Config struct {
 	Env              string     `yaml:"env" env:"ENV" env-default:"local"`
 	ProcessorWorkers int        `yaml:"processor_workers" env:"PROCESSOR_WORKERS" env-default:"4"`
+	EnableMetrics    bool       `yaml:"enable_metrics" env:"ENABLE_METRICS" env-default:"false"`
 	Filters          BpfFilters `yaml:"filters"`
 	HTTPServer       `yaml:"http_server"`
 	PasswordHash     []byte

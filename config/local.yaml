@@ -13,3 +13,4 @@ filters:
   dst_ip: ""
   ports: ""
 processor_workers: 8
+enable_metrics: true

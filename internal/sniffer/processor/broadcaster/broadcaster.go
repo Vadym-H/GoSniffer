@@ -29,6 +29,7 @@ func NewPacketBroadcaster(source *capture.PacketStream, log *slog.Logger) *Packe
 }
 
 // RegisterConsumer creates and returns a new channel for a consumer
+// Returns the consumer ID for later unregistration
 func (b *PacketBroadcaster) RegisterConsumer(bufferSize int) chan gopacket.Packet {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -40,6 +41,20 @@ func (b *PacketBroadcaster) RegisterConsumer(bufferSize int) chan gopacket.Packe
 		slog.Int("bufferSize", bufferSize))
 
 	return ch
+}
+
+// UnregisterConsumer removes a consumer by ID and closes its channel
+func (b *PacketBroadcaster) UnregisterConsumer(consumerID int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if consumerID >= 0 && consumerID < len(b.consumers) {
+		if b.consumers[consumerID] != nil {
+			close(b.consumers[consumerID])
+			b.consumers[consumerID] = nil // Mark as removed
+			b.log.Info("Consumer unregistered", slog.Int("consumerID", consumerID))
+		}
+	}
 }
 
 // Start begins broadcasting packets to all registered consumers
@@ -82,6 +97,11 @@ func (b *PacketBroadcaster) broadcastPacket(packet gopacket.Packet) {
 
 	// Send to all consumers
 	for i, consumer := range b.consumers {
+		// Skip nil consumers (unregistered)
+		if consumer == nil {
+			continue
+		}
+
 		select {
 		case consumer <- packet:
 			// Successfully sent

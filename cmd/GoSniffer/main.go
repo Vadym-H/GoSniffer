@@ -10,12 +10,14 @@ import (
 	"github.com/Vadym-H/GoSniffer/internal/http-server/auth/session"
 	"github.com/Vadym-H/GoSniffer/internal/http-server/handlers/auth/login"
 	"github.com/Vadym-H/GoSniffer/internal/http-server/handlers/debug"
+	"github.com/Vadym-H/GoSniffer/internal/http-server/handlers/metrics"
 	confighandler "github.com/Vadym-H/GoSniffer/internal/http-server/handlers/sniffer/config"
 	"github.com/Vadym-H/GoSniffer/internal/http-server/handlers/sniffer/device"
 	mwLogger "github.com/Vadym-H/GoSniffer/internal/http-server/middleware/logger"
 	sessionMiddleware "github.com/Vadym-H/GoSniffer/internal/http-server/middleware/session"
 	"github.com/Vadym-H/GoSniffer/internal/lib/logger/sl"
 	setuplogger "github.com/Vadym-H/GoSniffer/internal/logger/setup"
+	metricskg "github.com/Vadym-H/GoSniffer/internal/metrics"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/capture"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/filemanager"
@@ -55,6 +57,12 @@ func main() {
 	// Public Routes
 	router.Post("/login", authHandler.Login)
 	router.Post("/logout", authHandler.Logout)
+
+	// Metrics endpoint (public, no session required)
+	if cfg.EnableMetrics {
+		metricsHandler := metrics.NewMetricsHandler()
+		router.Get("/metrics", metricsHandler.GetMetrics)
+	}
 
 	// Protected Routes
 	router.Route("/sniffer", func(r chi.Router) {
@@ -112,7 +120,7 @@ func main() {
 		consoleProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, consoleWriter, log)
 
 		// PCAP Writer Setup
-		pcapWriter, err := pcapwriter.NewPcapWriter(interfaceName, 30*time.Second, log, fm)
+		pcapWriter, err := pcapwriter.NewPcapWriter(interfaceName, 10*time.Second, log, fm)
 		if err != nil {
 			log.Error("Failed to create PCAP writer", slog.String("error", err.Error()))
 			return
@@ -120,7 +128,7 @@ func main() {
 		pcapProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, pcapWriter, log)
 
 		// CSV Writer Setup
-		csvWriter, err := csvwriter.NewCSVWriter(interfaceName, 30*time.Second, log, fm)
+		csvWriter, err := csvwriter.NewCSVWriter(interfaceName, 10*time.Second, log, fm)
 		if err != nil {
 			log.Error("Failed to create CSV writer", slog.String("error", err.Error()))
 			return
@@ -128,7 +136,7 @@ func main() {
 		csvProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, csvWriter, log)
 
 		// JSON Writer Setup
-		jsonWriter, err := jsonwriter.NewJSONWriter(interfaceName, 30*time.Second, log, fm)
+		jsonWriter, err := jsonwriter.NewJSONWriter(interfaceName, 10*time.Second, log, fm)
 		if err != nil {
 			log.Error("Failed to create JSON writer", slog.String("error", err.Error()))
 			return
@@ -147,33 +155,51 @@ func main() {
 		csvProcessor.Start(csvChan, stream)
 		jsonProcessor.Start(jsonChan, stream)
 
+		// Metrics Aggregator Setup (if enabled)
+		var metricsAggregator *sniffer.MetricsAggregator
+		if cfg.EnableMetrics {
+			metricsCollector := metricskg.NewMetricsCollector()
+			metricsAggregator = sniffer.NewMetricsAggregator(interfaceName, metricsCollector, log)
+			metricsChan := broadcaster.RegisterConsumer(10000)
+			// Consumer ID 4 (Console=0, PCAP=1, CSV=2, JSON=3, Metrics=4)
+			metricsAggregator.Start(metricsChan, stream)
+
+			// Store in global context for HTTP handler access
+			metrics.SetCollector(metricsCollector)
+		}
+
 		log.Info("All packet processors started",
 			slog.String("console_writer", "active"),
 			slog.String("pcap_writer", "active"),
 			slog.String("csv_writer", "active"),
-			slog.String("json_writer", "active"))
+			slog.String("json_writer", "active"),
+			slog.Bool("metrics_exporter", cfg.EnableMetrics))
 
-		// Run for 30 seconds
-		time.Sleep(30 * time.Second)
+		// Stop only time-limited writers after 30 seconds
+		// Metrics aggregator continues running indefinitely
+		go func() {
+			time.Sleep(10 * time.Second)
 
-		// Graceful Shutdown
+			log.Info("Stopping time-limited writers...")
 
-		log.Info("Stopping packet processors...")
+			// Stop processors first
+			consoleProcessor.Stop()
+			jsonProcessor.Stop()
+			csvProcessor.Stop()
+			pcapProcessor.Stop()
 
-		jsonProcessor.Stop()
-		csvProcessor.Stop()
-		pcapProcessor.Stop()
-		broadcaster.Stop()
-		consoleWriter.Stop()
+			// IMPORTANT: Unregister their consumers from broadcaster
+			broadcaster.UnregisterConsumer(0) // console
+			broadcaster.UnregisterConsumer(1) // pcap
+			broadcaster.UnregisterConsumer(2) // csv
+			broadcaster.UnregisterConsumer(3) // json
+			// Keep metrics consumer registered (consumerID 4)
 
-		// Stop the packet capture loop
-		log.Info("Stopping packet capture...")
-		stream.Stop <- true
+			log.Info("Time-limited writers stopped (metrics still running)")
+		}()
 
-		// Give goroutines time to finish
-		time.Sleep(1 * time.Second)
-
-		log.Info("All packet processors stopped successfully")
+		// Metrics aggregator runs indefinitely (will be stopped when HTTP server shuts down)
+		// Broadcaster and capture continue running to feed the metrics aggregator
 
 	}()
 
