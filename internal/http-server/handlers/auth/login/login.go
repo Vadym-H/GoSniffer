@@ -28,7 +28,12 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
+	if req.Password == "" {
+		http.Error(w, "EMPTY PASSWORD", http.StatusBadRequest)
+		return
+	}
 
+	// Check against bcrypt hash from config
 	if bcrypt.CompareHashAndPassword(h.cfg.PasswordHash, []byte(req.Password)) != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return

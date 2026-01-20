@@ -57,6 +57,20 @@ func NewFileManager(log *slog.Logger) (*FileManager, error) {
 	return fm, nil
 }
 
+// GetBaseDir returns the base directory path
+func (fm *FileManager) GetBaseDir() string {
+	return fm.baseDir
+}
+
+// GetAbsBaseDir returns the absolute path of the base directory
+func (fm *FileManager) GetAbsBaseDir() string {
+	abs, err := filepath.Abs(fm.baseDir)
+	if err != nil {
+		return fm.baseDir
+	}
+	return abs
+}
+
 // GetFilePath generates a timestamped file path and handles cleanup if max files reached
 func (fm *FileManager) GetFilePath(fileType string) (string, error) {
 	fm.mu.Lock()

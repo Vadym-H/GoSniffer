@@ -4,7 +4,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/Vadym-H/GoSniffer/internal/config"
 	"github.com/Vadym-H/GoSniffer/internal/http-server/auth/session"
@@ -13,20 +12,19 @@ import (
 	"github.com/Vadym-H/GoSniffer/internal/http-server/handlers/metrics"
 	confighandler "github.com/Vadym-H/GoSniffer/internal/http-server/handlers/sniffer/config"
 	"github.com/Vadym-H/GoSniffer/internal/http-server/handlers/sniffer/device"
+	fileopshandler "github.com/Vadym-H/GoSniffer/internal/http-server/handlers/sniffer/fileops"
+	metricsctlhandler "github.com/Vadym-H/GoSniffer/internal/http-server/handlers/sniffer/metricsctl"
+	packetshandler "github.com/Vadym-H/GoSniffer/internal/http-server/handlers/sniffer/packets"
+	recordinghandler "github.com/Vadym-H/GoSniffer/internal/http-server/handlers/sniffer/recording"
 	mwLogger "github.com/Vadym-H/GoSniffer/internal/http-server/middleware/logger"
-	sessionMiddleware "github.com/Vadym-H/GoSniffer/internal/http-server/middleware/session"
 	"github.com/Vadym-H/GoSniffer/internal/lib/logger/sl"
 	setuplogger "github.com/Vadym-H/GoSniffer/internal/logger/setup"
 	metricskg "github.com/Vadym-H/GoSniffer/internal/metrics"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/capture"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/filemanager"
-	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/toConsole"
-	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/toFife/csvwriter"
-	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/toFife/jsonwriter"
-	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/toFife/pcapwriter"
-	"github.com/Vadym-H/GoSniffer/internal/sniffer/processor"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/processor/broadcaster"
+	recordingservice "github.com/Vadym-H/GoSniffer/internal/sniffer/recording"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 )
@@ -45,6 +43,27 @@ func main() {
 	deviceHandler := device.NewDeviceHandler(log, snifferService)
 	filterHandler := confighandler.NewFilterHandler(cfg, log)
 
+	// Initialize File Manager for recording and file ops
+	fm, err := filemanager.NewFileManager(log)
+	if err != nil {
+		log.Error("Failed to initialize file manager", sl.Err(err))
+		return
+	}
+
+	// Initialize Recording Service
+	recordingService := recordingservice.NewRecordingService(cfg, log, fm)
+	recordingHandler := recordinghandler.NewRecordingHandler(log, recordingService)
+
+	// Initialize Metrics Service
+	metricsService := sniffer.NewMetricsService(log)
+	metricsControlHandler := metricsctlhandler.NewMetricsControlHandler(log, metricsService)
+
+	// Initialize File Operations Handler
+	fileOpsHandler := fileopshandler.NewFileOpsHandler(log, fm.GetAbsBaseDir())
+
+	// Initialize packet stream handler with dependencies (broadcaster will be set later)
+	packetStreamHandler := packetshandler.NewPacketStreamHandler(log, nil, recordingService, fm.GetAbsBaseDir(), "")
+
 	router := chi.NewRouter()
 
 	// Middleware Registration
@@ -58,15 +77,13 @@ func main() {
 	router.Post("/login", authHandler.Login)
 	router.Post("/logout", authHandler.Logout)
 
-	// Metrics endpoint (public, no session required)
-	if cfg.EnableMetrics {
-		metricsHandler := metrics.NewMetricsHandler()
-		router.Get("/metrics", metricsHandler.GetMetrics)
-	}
+	// Metrics endpoint (public, no session required) - always available
+	metricsHandler := metrics.NewMetricsHandler()
+	router.Get("/metrics", metricsHandler.GetMetrics)
 
 	// Protected Routes
 	router.Route("/sniffer", func(r chi.Router) {
-		r.Use(sessionMiddleware.AuthMiddleware(store))
+		//r.Use(sessionMiddleware.AuthMiddleware(store))
 
 		r.Get("/ping", debug.Ping)
 		r.Get("/devices", deviceHandler.ListDevices)
@@ -74,9 +91,22 @@ func main() {
 
 		r.Get("/filters", filterHandler.GetFilters)
 		r.Post("/filters/set", filterHandler.SetFilters)
-		//r.Post("/start", snifferHandler.Start)
-		//r.Post("/stop", snifferHandler.Stop)
-		//r.Get("/status", snifferHandler.Status)
+
+		// Recording endpoints - separate for each format
+		r.Post("/recording/{format}/start", recordingHandler.Start)
+		r.Post("/recording/{format}/stop", recordingHandler.Stop)
+		r.Get("/recording/{format}/status", recordingHandler.Status)
+
+		// Metrics control endpoints
+		r.Post("/metrics/start", metricsControlHandler.Start)
+		r.Post("/metrics/stop", metricsControlHandler.Stop)
+		r.Get("/metrics/status", metricsControlHandler.Status)
+
+		// File operations endpoints
+		r.Get("/captures", fileOpsHandler.ListCaptures)
+		r.Get("/captures/download/*", fileOpsHandler.DownloadCapture)
+		// Packet stream endpoint
+		r.Get("/packets/stream", packetStreamHandler.StreamMetrics)
 	})
 
 	srv := &http.Server{
@@ -96,15 +126,7 @@ func main() {
 
 	log.Info("HTTP server started", slog.String("addr", cfg.Address))
 
-	// Initialize File Manager
-	fm, err := filemanager.NewFileManager(log)
-	if err != nil {
-		log.Error("Failed to initialize file manager", sl.Err(err))
-		return
-	}
-
-	// Packet Capture and Writer Testing
-
+	// Packet Capture Setup (always running, independent of recording)
 	interfaceName := "wlo1" // TODO: Get the real interface name
 
 	go func() {
@@ -114,93 +136,36 @@ func main() {
 			return
 		}
 		broadcaster := broadcaster.NewPacketBroadcaster(stream, log)
-
-		// Console Writer Setup
-		consoleWriter := toConsole.NewConsoleWriter(true)
-		consoleProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, consoleWriter, log)
-
-		// PCAP Writer Setup
-		pcapWriter, err := pcapwriter.NewPcapWriter(interfaceName, 10*time.Second, log, fm)
-		if err != nil {
-			log.Error("Failed to create PCAP writer", slog.String("error", err.Error()))
-			return
-		}
-		pcapProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, pcapWriter, log)
-
-		// CSV Writer Setup
-		csvWriter, err := csvwriter.NewCSVWriter(interfaceName, 10*time.Second, log, fm)
-		if err != nil {
-			log.Error("Failed to create CSV writer", slog.String("error", err.Error()))
-			return
-		}
-		csvProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, csvWriter, log)
-
-		// JSON Writer Setup
-		jsonWriter, err := jsonwriter.NewJSONWriter(interfaceName, 10*time.Second, log, fm)
-		if err != nil {
-			log.Error("Failed to create JSON writer", slog.String("error", err.Error()))
-			return
-		}
-		jsonProcessor := processor.NewPacketProcessor(cfg.ProcessorWorkers, jsonWriter, log)
-
-		// Register Consumers and Start Processing
-		consoleChan := broadcaster.RegisterConsumer(10000)
-		pcapChan := broadcaster.RegisterConsumer(10000)
-		csvChan := broadcaster.RegisterConsumer(10000)
-		jsonChan := broadcaster.RegisterConsumer(10000)
-
 		broadcaster.Start()
-		consoleProcessor.Start(consoleChan, stream)
-		pcapProcessor.Start(pcapChan, stream)
-		csvProcessor.Start(csvChan, stream)
-		jsonProcessor.Start(jsonChan, stream)
 
-		// Metrics Aggregator Setup (if enabled)
-		var metricsAggregator *sniffer.MetricsAggregator
+		// Set broadcaster reference for services
+		recordingService.SetBroadcasterRef(broadcaster, interfaceName)
+
+		// ALWAYS initialize metrics collector and set broadcaster (regardless of enable_metrics)
+		// This allows API-based start/stop to work
+		metricsCollector := metricskg.NewMetricsCollector()
+		metricsService.SetBroadcasterRef(broadcaster, interfaceName, metricsCollector)
+		metrics.SetCollector(metricsCollector)
+
+		// Only auto-start metrics if enabled in config
 		if cfg.EnableMetrics {
-			metricsCollector := metricskg.NewMetricsCollector()
-			metricsAggregator = sniffer.NewMetricsAggregator(interfaceName, metricsCollector, log)
-			metricsChan := broadcaster.RegisterConsumer(10000)
-			// Consumer ID 4 (Console=0, PCAP=1, CSV=2, JSON=3, Metrics=4)
-			metricsAggregator.Start(metricsChan, stream)
-
-			// Store in global context for HTTP handler access
-			metrics.SetCollector(metricsCollector)
+			if err := metricsService.Start(); err != nil {
+				log.Error("Failed to start metrics on startup", sl.Err(err))
+			} else {
+				log.Info("Metrics collection auto-started (enable_metrics: true)")
+			}
 		}
 
-		log.Info("All packet processors started",
-			slog.String("console_writer", "active"),
-			slog.String("pcap_writer", "active"),
-			slog.String("csv_writer", "active"),
-			slog.String("json_writer", "active"),
-			slog.Bool("metrics_exporter", cfg.EnableMetrics))
+		// Set packet stream handler
+		packetStreamHandler.SetBroadcaster(broadcaster)
+		packetStreamHandler.SetInterfaceName(interfaceName)
 
-		// Stop only time-limited writers after 30 seconds
-		// Metrics aggregator continues running indefinitely
-		go func() {
-			time.Sleep(10 * time.Second)
+		log.Info("Packet capture initialized and broadcaster started",
+			slog.String("interface", interfaceName),
+			slog.Bool("metrics_auto_start", cfg.EnableMetrics))
 
-			log.Info("Stopping time-limited writers...")
-
-			// Stop processors first
-			consoleProcessor.Stop()
-			jsonProcessor.Stop()
-			csvProcessor.Stop()
-			pcapProcessor.Stop()
-
-			// IMPORTANT: Unregister their consumers from broadcaster
-			broadcaster.UnregisterConsumer(0) // console
-			broadcaster.UnregisterConsumer(1) // pcap
-			broadcaster.UnregisterConsumer(2) // csv
-			broadcaster.UnregisterConsumer(3) // json
-			// Keep metrics consumer registered (consumerID 4)
-
-			log.Info("Time-limited writers stopped (metrics still running)")
-		}()
-
-		// Metrics aggregator runs indefinitely (will be stopped when HTTP server shuts down)
-		// Broadcaster and capture continue running to feed the metrics aggregator
-
+		// Keep broadcaster running indefinitely
+		// It will feed packets to recording service and metrics service as needed
 	}()
 
 	select {}

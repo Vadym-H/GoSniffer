@@ -80,7 +80,7 @@ func (w *PcapWriter) WritePacket(pkt gopacket.Packet, count int) {
 }
 
 func (w *PcapWriter) SupportsConcurrentWrites() bool {
-	return true // Safe with mutex protection
+	return false // PCAP format requires sequential writes to maintain integrity
 }
 
 // Stop manually stops packet capture before duration expires

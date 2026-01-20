@@ -3,3 +3,7 @@
 *.out
 *.test
 vendor/
+/bin/
+*.pcap
+*.csv
+*.json

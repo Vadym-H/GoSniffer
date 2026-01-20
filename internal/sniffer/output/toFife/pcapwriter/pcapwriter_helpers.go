@@ -54,9 +54,8 @@ func (w *PcapWriter) closeInternal() error {
 			slog.String("filename", w.filename))
 		w.file = nil
 		w.writer = nil
-	} else {
-		w.log.Warn("Close() called but file handle is already nil")
 	}
+	// Silently return if file is already closed (not an error condition)
 	return nil
 }
 

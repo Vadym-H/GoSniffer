@@ -21,7 +21,7 @@ services:
     tty: true
     environment:
       - CONFIG_PATH=/app/config/local.yaml
-      - APP_PASSWORD=admin
+      - APP_PASSWORD=supersecret
 
   prometheus:
     image: prom/prometheus:latest

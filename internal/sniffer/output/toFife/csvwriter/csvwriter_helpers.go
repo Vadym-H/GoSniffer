@@ -65,9 +65,8 @@ func (w *CSVWriter) closeInternal() error {
 			slog.String("filename", w.Filename))
 		w.File = nil
 		w.Writer = nil
-	} else {
-		w.Log.Warn("Close() called but file handle is already nil")
 	}
+	// Silently return if file is already closed (not an error condition)
 	return nil
 }
 
