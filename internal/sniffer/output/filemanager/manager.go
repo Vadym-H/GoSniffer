@@ -112,8 +112,8 @@ func (fm *FileManager) GetFilePath(fileType string) (string, error) {
 		// Continue anyway, don't fail the operation
 	}
 
-	// Generate filename with timestamp
-	timestamp := time.Now().Format("2006-01-02_15-04-05")
+	// Generate filename with timestamp using local time
+	timestamp := time.Now().Local().Format("2006-01-02_15-04-05")
 	filename := fmt.Sprintf("capture_%s.%s", timestamp, ext)
 	filePath := filepath.Join(dirPath, filename)
 

@@ -20,7 +20,6 @@ interface MetricsData {
     peak_memory_mb: number;
     peak_goroutines: number;
   };
-  buffer_utilization: number;
   active_subscribers: number;
   system_metrics: {
     memory_usage_mb: number;
@@ -59,26 +58,6 @@ export default function Dashboard() {
   const [history, setHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  
-  // Initialize timer from localStorage or create new one
-  const [nextResetTime, setNextResetTime] = useState<number>(() => {
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('metricsResetTime');
-      if (stored) {
-        const storedTime = parseInt(stored, 10);
-        // If stored time is in the future, use it; otherwise create a new one
-        if (storedTime > Date.now()) {
-          return storedTime;
-        }
-      }
-    }
-    // Create new 30-minute window
-    const newResetTime = Date.now() + 30 * 60 * 1000;
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('metricsResetTime', newResetTime.toString());
-    }
-    return newResetTime;
-  });
 
   useEffect(() => {
     let eventSource: EventSource | null = null;
@@ -146,31 +125,6 @@ export default function Dashboard() {
     };
   }, []);
 
-  // Track 30-minute window for metrics reset
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const now = Date.now();
-      if (now >= nextResetTime) {
-        const newResetTime = now + 30 * 60 * 1000;
-        setNextResetTime(newResetTime);
-        if (typeof window !== 'undefined') {
-          localStorage.setItem('metricsResetTime', newResetTime.toString());
-        }
-      }
-    }, 1000); // Check every second
-
-    return () => clearInterval(timer);
-  }, [nextResetTime]);
-
-  // Calculate time until next reset
-  const getTimeUntilReset = () => {
-    const now = Date.now();
-    const msUntilReset = nextResetTime - now;
-    const minutesUntilReset = Math.floor(msUntilReset / 60000);
-    const secondsUntilReset = Math.floor((msUntilReset % 60000) / 1000);
-    return `${minutesUntilReset}m ${secondsUntilReset}s`;
-  };
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -200,19 +154,6 @@ export default function Dashboard() {
     </div>
   );
 
-  const MetricCardWith30MinReset = ({ label, value, unit = '' }: any) => (
-    <div className="bg-gradient-to-br from-slate-800 to-slate-900 p-4 rounded-lg border border-slate-700 hover:border-slate-600 transition-colors">
-      <div className="flex items-center justify-between">
-        <p className="text-slate-400 text-xs font-semibold uppercase tracking-wider">{label}</p>
-        <p className="text-xs text-amber-400 font-semibold">Resets in {getTimeUntilReset()}</p>
-      </div>
-      <div className="flex items-baseline gap-2 mt-2">
-        <p className="text-3xl font-bold text-white">{value}</p>
-        {unit && <span className="text-sm text-slate-400">{unit}</span>}
-      </div>
-    </div>
-  );
-
   const SectionTitle = ({ children }: any) => (
     <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
       <div className="w-1 h-6 bg-gradient-to-b from-cyan-500 to-blue-500 rounded-full"></div>
@@ -229,8 +170,8 @@ export default function Dashboard() {
           <MetricCard label="Packets/Sec" value={metrics?.packets_per_second || 0} unit="pkt/s" />
           <MetricCard label="Bytes/Sec" value={(metrics?.bytes_per_second || 0).toLocaleString()} unit="B/s" />
           <MetricCard label="Throughput" value={metrics?.mbps.toFixed(2) || '0.00'} unit="Mbps" />
-          <MetricCardWith30MinReset label="Total Packets" value={(metrics?.total_packets || 0).toLocaleString()} />
-          <MetricCardWith30MinReset label="Total Bytes" value={(metrics?.total_bytes || 0).toLocaleString()} unit="B" />
+          <MetricCard label="Total Packets" value={(metrics?.total_packets || 0).toLocaleString()} />
+          <MetricCard label="Total Bytes" value={(metrics?.total_bytes || 0).toLocaleString()} unit="B" />
         </div>
       </div>
 
@@ -240,7 +181,6 @@ export default function Dashboard() {
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
           <MetricCard label="Dropped Packets" value={metrics?.dropped_packets || 0} />
           <MetricCard label="Drop Rate" value={(metrics?.drop_rate_percent || 0).toFixed(2)} unit="%" />
-          <MetricCard label="Buffer Usage" value={(metrics?.buffer_utilization || 0).toFixed(2)} unit="%" />
           <MetricCard label="Active Subscribers" value={metrics?.active_subscribers || 0} />
         </div>
       </div>

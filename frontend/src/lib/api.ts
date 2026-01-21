@@ -62,20 +62,26 @@ export const filterAPI = {
 
 // Recording endpoints
 export const recordingAPI = {
-  startPcap: () =>
-    api.post('/sniffer/recording/pcap/start'),
+  startPcap: (durationSeconds: number = 0) =>
+    api.post('/sniffer/recording/pcap/start', { duration_seconds: durationSeconds }),
   stopPcap: () =>
-    api.post('/sniffer/recording/pcap/stop'),
-  startCsv: () =>
-    api.post('/sniffer/recording/csv/start'),
+    api.post('/sniffer/recording/pcap/stop', {}),
+  startCsv: (durationSeconds: number = 0) =>
+    api.post('/sniffer/recording/csv/start', { duration_seconds: durationSeconds }),
   stopCsv: () =>
-    api.post('/sniffer/recording/csv/stop'),
-  startJson: () =>
-    api.post('/sniffer/recording/json/start'),
+    api.post('/sniffer/recording/csv/stop', {}),
+  startJson: (durationSeconds: number = 0) =>
+    api.post('/sniffer/recording/json/start', { duration_seconds: durationSeconds }),
   stopJson: () =>
-    api.post('/sniffer/recording/json/stop'),
+    api.post('/sniffer/recording/json/stop', {}),
   getStatus: () =>
     api.get('/sniffer/recording/pcap/status'),
+  getStatusPcap: () =>
+    api.get('/sniffer/recording/pcap/status'),
+  getStatusCsv: () =>
+    api.get('/sniffer/recording/csv/status'),
+  getStatusJson: () =>
+    api.get('/sniffer/recording/json/status'),
 };
 
 // Metrics endpoints
