@@ -9,6 +9,11 @@ import (
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/capture"
 )
 
+type Device struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 type DeviceHandler struct {
 	Log     *slog.Logger
 	Sniffer *sniffer.Service
@@ -28,8 +33,17 @@ func (h *DeviceHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Convert string slice to Device objects
+	deviceList := make([]Device, len(devices))
+	for i, name := range devices {
+		deviceList[i] = Device{
+			Name:        name,
+			Description: "",
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(devices)
+	json.NewEncoder(w).Encode(deviceList)
 }
 
 func (h *DeviceHandler) ChooseDevice(w http.ResponseWriter, r *http.Request) {

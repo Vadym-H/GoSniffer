@@ -1,4 +1,6 @@
 env: "local"
+interface: "wlo1"
+enable_console_writer: true
 http_server:
   address: "0.0.0.0:8080"
   timeout: 100s

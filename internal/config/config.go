@@ -11,12 +11,14 @@ import (
 )
 
 type Config struct {
-	Env              string     `yaml:"env" env:"ENV" env-default:"local"`
-	ProcessorWorkers int        `yaml:"processor_workers" env:"PROCESSOR_WORKERS" env-default:"4"`
-	EnableMetrics    bool       `yaml:"enable_metrics" env:"ENABLE_METRICS" env-default:"false"`
-	Filters          BpfFilters `yaml:"filters"`
-	HTTPServer       `yaml:"http_server"`
-	PasswordHash     []byte
+	Env                 string     `yaml:"env" env:"ENV" env-default:"local"`
+	Interface           string     `yaml:"interface" env:"INTERFACE" env-default:"wlo1"`
+	ProcessorWorkers    int        `yaml:"processor_workers" env:"PROCESSOR_WORKERS" env-default:"4"`
+	EnableMetrics       bool       `yaml:"enable_metrics" env:"ENABLE_METRICS" env-default:"false"`
+	EnableConsoleWriter bool       `yaml:"enable_console_writer" env:"ENABLE_CONSOLE_WRITER" env-default:"false"`
+	Filters             BpfFilters `yaml:"filters"`
+	HTTPServer          `yaml:"http_server"`
+	PasswordHash        []byte
 }
 type HTTPServer struct {
 	Address     string        `yaml:"address" env-default:":8080"`

@@ -145,8 +145,11 @@ func (b *PacketBroadcaster) closeAllConsumers() {
 	defer b.mu.Unlock()
 
 	for i, consumer := range b.consumers {
-		close(consumer)
-		b.log.Info("Closed consumer channel", slog.Int("consumerID", i))
+		// Check if consumer is not nil before closing (may have been unregistered)
+		if consumer != nil {
+			close(consumer)
+			b.log.Info("Closed consumer channel", slog.Int("consumerID", i))
+		}
 	}
 }
 

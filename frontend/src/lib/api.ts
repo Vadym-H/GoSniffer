@@ -52,6 +52,16 @@ export const deviceAPI = {
     api.post('/sniffer/devices/select', { device_name: deviceName }),
 };
 
+// Configuration endpoints
+export const configurationAPI = {
+  getDevices: () =>
+    api.get('/sniffer/devices'),
+  getFilters: () =>
+    api.get('/sniffer/filters'),
+  applyConfiguration: (config: { device_name: string; filters: any }) =>
+    api.post('/sniffer/configuration/apply', config),
+};
+
 // Filter endpoints
 export const filterAPI = {
   getFilters: () =>

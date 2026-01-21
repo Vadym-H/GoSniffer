@@ -4,6 +4,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/Vadym-H/GoSniffer/internal/config"
 	"github.com/Vadym-H/GoSniffer/internal/http-server/auth/session"
@@ -23,6 +25,8 @@ import (
 	"github.com/Vadym-H/GoSniffer/internal/sniffer"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/capture"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/filemanager"
+	"github.com/Vadym-H/GoSniffer/internal/sniffer/output/toConsole"
+	"github.com/Vadym-H/GoSniffer/internal/sniffer/processor"
 	"github.com/Vadym-H/GoSniffer/internal/sniffer/processor/broadcaster"
 	recordingservice "github.com/Vadym-H/GoSniffer/internal/sniffer/recording"
 	"github.com/go-chi/chi/v5"
@@ -35,83 +39,160 @@ func main() {
 
 	log.Info("Starting GoSniffer...")
 
-	// HTTP Server Setup
+	// Initialize all handlers and services
+	handlers := initializeHandlers(cfg, log)
 
+	// Setup and start HTTP server
+	router := setupRouter(handlers, log)
+	startHTTPServer(router, cfg, log)
+
+	// Initialize and start packet sniffer
+	snifferState := initializeSnifferState()
+	metricsCollector := metricskg.NewMetricsCollector()
+	metrics.SetCollector(metricsCollector)
+
+	// Create the sniffer restart callback
+	startSnifferFn := createStartSnifferCallback(
+		cfg,
+		log,
+		snifferState,
+		metricsCollector,
+		handlers.recordingService,
+		handlers.metricsService,
+		handlers.packetStreamHandler,
+	)
+
+	// Register callback and start sniffer
+	handlers.filterHandler.SetRestartCallback(startSnifferFn)
+	if err := startSnifferFn(cfg.Interface, &cfg.Filters); err != nil {
+		log.Error("Failed to start initial sniffer", sl.Err(err))
+	}
+
+	// Keep application running
+	select {}
+}
+
+// HandlerDependencies holds all HTTP handlers and services
+type HandlerDependencies struct {
+	authHandler           *login.AuthHandler
+	deviceHandler         *device.DeviceHandler
+	filterHandler         *confighandler.FilterHandler
+	recordingHandler      *recordinghandler.RecordingHandler
+	metricsControlHandler *metricsctlhandler.MetricsControlHandler
+	fileOpsHandler        *fileopshandler.FileOpsHandler
+	metricsHandler        *metrics.MetricsHandler
+	recordingService      *recordingservice.RecordingService
+	metricsService        *sniffer.MetricsService
+	packetStreamHandler   *packetshandler.PacketStreamHandler
+}
+
+// SnifferState tracks the current sniffer instance state
+type SnifferState struct {
+	currentPacketStream *capture.PacketStream
+	currentStopChan     chan bool
+	mu                  sync.Mutex
+}
+
+// initializeHandlers creates and configures all HTTP handlers and services
+func initializeHandlers(cfg *config.Config, log *slog.Logger) *HandlerDependencies {
+	// Initialize file manager
+	fm, err := filemanager.NewFileManager(log)
+	if err != nil {
+		log.Error("Failed to initialize file manager", sl.Err(err))
+		return nil
+	}
+
+	// Initialize session store and base services
 	store := session.NewSessionStore()
 	snifferService := sniffer.New(log)
+
+	// Initialize auth and device handlers
 	authHandler := login.NewAuthHandler(cfg, store)
 	deviceHandler := device.NewDeviceHandler(log, snifferService)
 	filterHandler := confighandler.NewFilterHandler(cfg, log)
 
-	// Initialize File Manager for recording and file ops
-	fm, err := filemanager.NewFileManager(log)
-	if err != nil {
-		log.Error("Failed to initialize file manager", sl.Err(err))
-		return
-	}
-
-	// Initialize Recording Service
+	// Initialize recording service and handler
 	recordingService := recordingservice.NewRecordingService(cfg, log, fm)
 	recordingHandler := recordinghandler.NewRecordingHandler(log, recordingService)
 
-	// Initialize Metrics Service
+	// Initialize metrics service and control handler
 	metricsService := sniffer.NewMetricsService(log)
 	metricsControlHandler := metricsctlhandler.NewMetricsControlHandler(log, metricsService)
 
-	// Initialize File Operations Handler
+	// Initialize file operations handler
 	fileOpsHandler := fileopshandler.NewFileOpsHandler(log, fm.GetAbsBaseDir())
 
-	// Initialize packet stream handler with dependencies (broadcaster will be set later)
+	// Initialize packet stream handler
 	packetStreamHandler := packetshandler.NewPacketStreamHandler(log, nil, recordingService, fm.GetAbsBaseDir(), "")
 
+	// Initialize metrics handler
+	metricsHandler := metrics.NewMetricsHandler()
+
+	// Return all dependencies
+	return &HandlerDependencies{
+		authHandler:           authHandler,
+		deviceHandler:         deviceHandler,
+		filterHandler:         filterHandler,
+		recordingHandler:      recordingHandler,
+		metricsControlHandler: metricsControlHandler,
+		fileOpsHandler:        fileOpsHandler,
+		metricsHandler:        metricsHandler,
+		recordingService:      recordingService,
+		metricsService:        metricsService,
+		packetStreamHandler:   packetStreamHandler,
+	}
+}
+
+// setupRouter creates and configures the HTTP router with all routes
+func setupRouter(deps *HandlerDependencies, log *slog.Logger) *chi.Mux {
 	router := chi.NewRouter()
 
-	// Middleware Registration
+	// Middleware
 	router.Use(middleware.RequestID)
 	router.Use(middleware.RealIP)
 	router.Use(mwLogger.New(log))
 	router.Use(middleware.Recoverer)
 	router.Use(middleware.URLFormat)
-
-	// CORS Middleware
 	router.Use(corsMiddleware)
 
-	// Public Routes
-	router.Post("/login", authHandler.Login)
-	router.Post("/logout", authHandler.Logout)
+	// Public routes
+	router.Post("/login", deps.authHandler.Login)
+	router.Post("/logout", deps.authHandler.Logout)
+	router.Get("/metrics", deps.metricsHandler.GetMetrics)
 
-	// Metrics endpoint (public, no session required) - always available
-	metricsHandler := metrics.NewMetricsHandler()
-	router.Get("/metrics", metricsHandler.GetMetrics)
-
-	// Protected Routes
+	// Protected sniffer routes
 	router.Route("/sniffer", func(r chi.Router) {
-		//r.Use(sessionMiddleware.AuthMiddleware(store))
-
+		// Device endpoints
 		r.Get("/ping", debug.Ping)
-		r.Get("/devices", deviceHandler.ListDevices)
-		r.Post("/devices/select", deviceHandler.ChooseDevice)
+		r.Get("/devices", deps.deviceHandler.ListDevices)
+		r.Post("/devices/select", deps.deviceHandler.ChooseDevice)
 
-		r.Get("/filters", filterHandler.GetFilters)
-		r.Post("/filters/set", filterHandler.SetFilters)
+		// Filter and configuration endpoints
+		r.Get("/filters", deps.filterHandler.GetFilters)
+		r.Post("/filters/set", deps.filterHandler.SetFilters)
+		r.Post("/configuration/apply", deps.filterHandler.ApplyConfiguration)
 
-		// Recording endpoints - separate for each format
-		r.Post("/recording/{format}/start", recordingHandler.Start)
-		r.Post("/recording/{format}/stop", recordingHandler.Stop)
-		r.Get("/recording/{format}/status", recordingHandler.Status)
+		// Recording endpoints
+		r.Post("/recording/{format}/start", deps.recordingHandler.Start)
+		r.Post("/recording/{format}/stop", deps.recordingHandler.Stop)
+		r.Get("/recording/{format}/status", deps.recordingHandler.Status)
 
 		// Metrics control endpoints
-		r.Post("/metrics/start", metricsControlHandler.Start)
-		r.Post("/metrics/stop", metricsControlHandler.Stop)
-		r.Get("/metrics/status", metricsControlHandler.Status)
+		r.Post("/metrics/start", deps.metricsControlHandler.Start)
+		r.Post("/metrics/stop", deps.metricsControlHandler.Stop)
+		r.Get("/metrics/status", deps.metricsControlHandler.Status)
 
 		// File operations endpoints
-		r.Get("/captures", fileOpsHandler.ListCaptures)
-		r.Get("/captures/download/*", fileOpsHandler.DownloadCapture)
-		// Packet stream endpoint
-		r.Get("/packets/stream", packetStreamHandler.StreamMetrics)
+		r.Get("/captures", deps.fileOpsHandler.ListCaptures)
+		r.Get("/captures/download/*", deps.fileOpsHandler.DownloadCapture)
+		r.Get("/packets/stream", deps.packetStreamHandler.StreamMetrics)
 	})
 
+	return router
+}
+
+// startHTTPServer starts the HTTP server in a goroutine
+func startHTTPServer(router *chi.Mux, cfg *config.Config, log *slog.Logger) {
 	srv := &http.Server{
 		Addr:              cfg.Address,
 		Handler:           router,
@@ -120,7 +201,6 @@ func main() {
 		IdleTimeout:       cfg.HTTPServer.IdleTimeout,
 	}
 
-	// Start HTTP server in goroutine so capture can run
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("Failed to start server", sl.Err(err))
@@ -128,50 +208,82 @@ func main() {
 	}()
 
 	log.Info("HTTP server started", slog.String("addr", cfg.Address))
+}
 
-	// Packet Capture Setup (always running, independent of recording)
-	interfaceName := "wlo1" // TODO: Get the real interface name
+// initializeSnifferState creates the sniffer state tracker
+func initializeSnifferState() *SnifferState {
+	return &SnifferState{}
+}
 
-	go func() {
-		stream, err := capture.StartSniffing(interfaceName, &cfg.Filters, log)
+// createStartSnifferCallback creates the function that starts/restarts the sniffer
+func createStartSnifferCallback(
+	cfg *config.Config,
+	log *slog.Logger,
+	state *SnifferState,
+	metricsCollector *metricskg.MetricsCollector,
+	recordingService *recordingservice.RecordingService,
+	metricsService *sniffer.MetricsService,
+	packetStreamHandler *packetshandler.PacketStreamHandler,
+) func(string, *config.BpfFilters) error {
+	return func(device string, filters *config.BpfFilters) error {
+		state.mu.Lock()
+		defer state.mu.Unlock()
+
+		log.Info("Starting sniffer with new configuration",
+			slog.String("device", device),
+			slog.Any("filters", filters))
+
+		// Stop existing sniffer if running
+		if state.currentPacketStream != nil && state.currentStopChan != nil {
+			log.Info("Stopping existing sniffer before restart")
+			if err := metricsService.Stop(); err != nil {
+				log.Warn("Failed to stop metrics", sl.Err(err))
+			}
+			state.currentStopChan <- true
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		// Start new sniffer
+		stream, err := capture.StartSniffing(device, filters, log)
 		if err != nil {
 			log.Error("Failed to start sniffing", slog.String("error", err.Error()))
-			return
+			return err
 		}
-		broadcaster := broadcaster.NewPacketBroadcaster(stream, log)
-		broadcaster.Start()
 
-		// Set broadcaster reference for services
-		recordingService.SetBroadcasterRef(broadcaster, interfaceName)
+		state.currentPacketStream = stream
+		state.currentStopChan = stream.Stop
 
-		// ALWAYS initialize metrics collector and set broadcaster (regardless of enable_metrics)
-		// This allows API-based start/stop to work
-		metricsCollector := metricskg.NewMetricsCollector()
-		metricsService.SetBroadcasterRef(broadcaster, interfaceName, metricsCollector)
-		metrics.SetCollector(metricsCollector)
+		// Initialize broadcaster and connect services
+		bcast := broadcaster.NewPacketBroadcaster(stream, log)
+		bcast.Start()
 
-		// Only auto-start metrics if enabled in config
+		// Start console writer
+		if cfg.EnableConsoleWriter {
+			consoleWriter := toConsole.NewConsoleWriter(true) // true for compact format
+			consoleProcessor := processor.NewPacketProcessor(1, consoleWriter, log)
+			consoleChannel := bcast.RegisterConsumer(1000)
+			consoleProcessor.Start(consoleChannel, stream)
+		}
+		recordingService.SetBroadcasterRef(bcast, device)
+		metricsService.SetBroadcasterRef(bcast, device, metricsCollector)
+		packetStreamHandler.SetBroadcaster(bcast)
+		packetStreamHandler.SetInterfaceName(device)
+
+		// Start metrics if enabled
 		if cfg.EnableMetrics {
 			if err := metricsService.Start(); err != nil {
-				log.Error("Failed to start metrics on startup", sl.Err(err))
+				log.Error("Failed to start metrics", sl.Err(err))
 			} else {
-				log.Info("Metrics collection auto-started (enable_metrics: true)")
+				log.Info("Metrics collection started")
 			}
 		}
 
-		// Set packet stream handler
-		packetStreamHandler.SetBroadcaster(broadcaster)
-		packetStreamHandler.SetInterfaceName(interfaceName)
+		log.Info("Sniffer started successfully",
+			slog.String("interface", device),
+			slog.Bool("metrics_enabled", cfg.EnableMetrics))
 
-		log.Info("Packet capture initialized and broadcaster started",
-			slog.String("interface", interfaceName),
-			slog.Bool("metrics_auto_start", cfg.EnableMetrics))
-
-		// Keep broadcaster running indefinitely
-		// It will feed packets to recording service and metrics service as needed
-	}()
-
-	select {}
+		return nil
+	}
 }
 
 // corsMiddleware adds CORS headers to allow browser requests from frontend
@@ -197,7 +309,3 @@ func corsMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-
-// TODO: Implement saving packets to files (PCAP, JSON, CSV)
-// TODO: Implement Prometheus exporter(export monitoring metrics)
-// TODO: Implement Web server UI

@@ -47,24 +47,14 @@ export default function DashboardLayout({
                   Dashboard
                 </Link>
                 <Link
-                  href="/dashboard/devices"
+                  href="/dashboard/configuration"
                   className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                    isActive('/dashboard/devices')
+                    isActive('/dashboard/configuration')
                       ? 'bg-cyan-500 text-slate-900'
                       : 'text-slate-300 hover:text-white border border-slate-700 hover:border-slate-600'
                   }`}
                 >
-                  Devices
-                </Link>
-                <Link
-                  href="/dashboard/filters"
-                  className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-                    isActive('/dashboard/filters')
-                      ? 'bg-cyan-500 text-slate-900'
-                      : 'text-slate-300 hover:text-white border border-slate-700 hover:border-slate-600'
-                  }`}
-                >
-                  Filters
+                  Configuration
                 </Link>
                 <Link
                   href="/dashboard/recording"
