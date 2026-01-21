@@ -120,13 +120,12 @@ type SystemMetrics struct {
 	GCPauseMs      float64 `json:"gc_pause_ms"`
 }
 
-// SnifferStatus provides sniffer health information
+// SnifferStatus provides sniffer information
 type SnifferStatus struct {
 	Uptime            int64  `json:"uptime_seconds"`
 	Interface         string `json:"interface"`
 	IsRecording       bool   `json:"is_recording"`
 	IsMetricsEnabled  bool   `json:"is_metrics_enabled"`
-	Health            string `json:"health"` // "healthy", "degraded", "unhealthy"
 	LastRestartTime   int64  `json:"last_restart_time,omitempty"`
 	ConsecutiveErrors int    `json:"consecutive_errors"`
 	FilterActive      bool   `json:"filter_active"`
@@ -361,21 +360,11 @@ func (h *PacketStreamHandler) StreamMetrics(w http.ResponseWriter, r *http.Reque
 				PeakGoroutines: h.peakGoroutines,
 			}
 
-			// Determine health status
-			health := "healthy"
-			if dropRate > 5.0 {
-				health = "degraded"
-			}
-			if dropRate > 20.0 || pps == 0 {
-				health = "unhealthy"
-			}
-
 			snifferStatus := SnifferStatus{
 				Uptime:            int64(time.Since(h.startTime).Seconds()),
 				Interface:         h.interfaceName,
 				IsRecording:       h.isRecording(),
 				IsMetricsEnabled:  true,
-				Health:            health,
 				ConsecutiveErrors: 0,     // Could be tracked separately
 				FilterActive:      false, // TODO: Get from filter config if needed
 			}

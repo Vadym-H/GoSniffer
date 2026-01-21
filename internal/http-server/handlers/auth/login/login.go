@@ -47,7 +47,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   false,
 		MaxAge:   3600,
 	})
 
@@ -63,7 +63,7 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 			Value:    "",
 			Path:     "/",
 			HttpOnly: true,
-			Secure:   true,
+			Secure:   false,
 			MaxAge:   -1,
 		})
 	}
