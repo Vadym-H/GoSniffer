@@ -205,15 +205,11 @@ http_server:
 			require.NoError(t, err)
 
 			// env
-			os.Setenv("CONFIG_PATH", configPath)
-			defer os.Unsetenv("CONFIG_PATH")
-
-			os.Setenv("APP_PASSWORD", "testpassword123")
-			defer os.Unsetenv("APP_PASSWORD")
+			t.Setenv("CONFIG_PATH", configPath)
+			t.Setenv("APP_PASSWORD", "testpassword123")
 
 			for key, value := range tt.envVars {
-				os.Setenv(key, value)
-				defer os.Unsetenv(key)
+				t.Setenv(key, value)
 			}
 
 			cfg := MustLoad()

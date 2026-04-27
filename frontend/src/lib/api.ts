@@ -105,7 +105,7 @@ export const metricsAPI = {
   getMetrics: () =>
     api.get('/metrics'),
   streamMetrics: (onData: (data: any) => void, onError: (error: Error) => void) => {
-    const eventSource = new EventSource(`${API_BASE_URL}/sniffer/packets/stream`);
+    const eventSource = new EventSource(`${API_BASE_URL}/sniffer/packets/stream`, { withCredentials: true });
 
     eventSource.onmessage = (event) => {
       try {

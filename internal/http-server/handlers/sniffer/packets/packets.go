@@ -270,7 +270,11 @@ func (h *PacketStreamHandler) StreamMetrics(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if h.broadcaster == nil {
+		http.Error(w, "Sniffer not ready", http.StatusServiceUnavailable)
+		return
+	}
 
 	h.log.Info("New SSE metrics client connected")
 

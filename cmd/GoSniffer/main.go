@@ -19,6 +19,7 @@ import (
 	packetshandler "github.com/Vadym-H/GoSniffer/internal/http-server/handlers/sniffer/packets"
 	recordinghandler "github.com/Vadym-H/GoSniffer/internal/http-server/handlers/sniffer/recording"
 	mwLogger "github.com/Vadym-H/GoSniffer/internal/http-server/middleware/logger"
+	sessionMiddleware "github.com/Vadym-H/GoSniffer/internal/http-server/middleware/session"
 	"github.com/Vadym-H/GoSniffer/internal/lib/logger/sl"
 	setuplogger "github.com/Vadym-H/GoSniffer/internal/logger/setup"
 	metricskg "github.com/Vadym-H/GoSniffer/internal/metrics"
@@ -84,6 +85,7 @@ type HandlerDependencies struct {
 	recordingService      *recordingservice.RecordingService
 	metricsService        *sniffer.MetricsService
 	packetStreamHandler   *packetshandler.PacketStreamHandler
+	store                 *session.StoreSession
 }
 
 // SnifferState tracks the current sniffer instance state
@@ -140,6 +142,7 @@ func initializeHandlers(cfg *config.Config, log *slog.Logger) *HandlerDependenci
 		recordingService:      recordingService,
 		metricsService:        metricsService,
 		packetStreamHandler:   packetStreamHandler,
+		store:                 store,
 	}
 }
 
@@ -162,6 +165,7 @@ func setupRouter(deps *HandlerDependencies, log *slog.Logger) *chi.Mux {
 
 	// Protected sniffer routes
 	router.Route("/sniffer", func(r chi.Router) {
+		r.Use(sessionMiddleware.AuthMiddleware(deps.store))
 		// Device endpoints
 		r.Get("/ping", debug.Ping)
 		r.Get("/devices", deps.deviceHandler.ListDevices)
