@@ -57,6 +57,7 @@ type SessionState struct {
 // RecordingService manages independent recording sessions for each format
 type RecordingService struct {
 	mu               sync.RWMutex
+	wg               sync.WaitGroup
 	sessions         map[RecordingFormat]*SessionState
 	broadcasterRef   *broadcaster.PacketBroadcaster
 	interfaceRef     string
@@ -116,6 +117,7 @@ func (rs *RecordingService) StartRecording(format RecordingFormat, durationSecon
 	rs.sessions[format] = session
 
 	// Start the recording session in a separate goroutine
+	rs.wg.Add(1)
 	go rs.runRecordingSession(ctx, duration, format, session)
 
 	rs.log.Info("Recording started", slog.String("format", string(format)), slog.Int("duration_seconds", durationSeconds))
@@ -124,6 +126,7 @@ func (rs *RecordingService) StartRecording(format RecordingFormat, durationSecon
 
 // runRecordingSession runs the recording with automatic cleanup
 func (rs *RecordingService) runRecordingSession(ctx context.Context, duration time.Duration, format RecordingFormat, session *SessionState) {
+	defer rs.wg.Done()
 	defer func() {
 		rs.mu.Lock()
 		session.isRecording = false
@@ -212,6 +215,18 @@ func (rs *RecordingService) StopRecording(format RecordingFormat) error {
 	}
 
 	return nil
+}
+
+// StopAll cancels all active recording sessions and waits for them to flush and close their files.
+func (rs *RecordingService) StopAll() {
+	rs.mu.Lock()
+	for _, session := range rs.sessions {
+		if session.isRecording && session.cancelCtx != nil {
+			session.cancelCtx()
+		}
+	}
+	rs.mu.Unlock()
+	rs.wg.Wait()
 }
 
 // GetStatus returns the current recording status for a specific format

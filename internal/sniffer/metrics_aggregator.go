@@ -135,7 +135,7 @@ func (ma *MetricsAggregator) worker() {
 // processPacket extracts metrics from a packet
 func (ma *MetricsAggregator) processPacket(packet gopacket.Packet) {
 	// Get packet size for bandwidth tracking
-	packetSize := int64(len(packet.Data()))
+	packetSize := int64(packet.Metadata().Length)
 	ma.bytesIn10s.Add(packetSize)
 
 	// Periodic bandwidth calculation

@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Vadym-H/GoSniffer/internal/config"
@@ -45,7 +49,7 @@ func main() {
 
 	// Setup and start HTTP server
 	router := setupRouter(handlers, log)
-	startHTTPServer(router, cfg, log)
+	srv := startHTTPServer(router, cfg, log)
 
 	// Initialize and start packet sniffer
 	snifferState := initializeSnifferState()
@@ -69,8 +73,35 @@ func main() {
 		log.Error("Failed to start initial sniffer", sl.Err(err))
 	}
 
-	// Keep application running
-	select {}
+	// Wait for shutdown signal
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+
+	log.Info("Shutting down...")
+
+	// Stop active recordings first so files are flushed and closed cleanly
+	handlers.recordingService.StopAll()
+
+	// Stop sniffer and broadcaster
+	snifferState.mu.Lock()
+	if snifferState.currentBroadcaster != nil {
+		snifferState.currentBroadcaster.Stop()
+	}
+	if snifferState.currentPacketStream != nil {
+		snifferState.currentStopChan <- true
+		<-snifferState.currentPacketStream.Done
+	}
+	snifferState.mu.Unlock()
+
+	// Shutdown HTTP server
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Error("HTTP server shutdown error", sl.Err(err))
+	}
+
+	log.Info("Shutdown complete")
 }
 
 // HandlerDependencies holds all HTTP handlers and services
@@ -92,6 +123,7 @@ type HandlerDependencies struct {
 type SnifferState struct {
 	currentPacketStream *capture.PacketStream
 	currentStopChan     chan bool
+	currentBroadcaster  *broadcaster.PacketBroadcaster
 	mu                  sync.Mutex
 }
 
@@ -195,8 +227,8 @@ func setupRouter(deps *HandlerDependencies, log *slog.Logger) *chi.Mux {
 	return router
 }
 
-// startHTTPServer starts the HTTP server in a goroutine
-func startHTTPServer(router *chi.Mux, cfg *config.Config, log *slog.Logger) {
+// startHTTPServer starts the HTTP server in a goroutine and returns it for graceful shutdown.
+func startHTTPServer(router *chi.Mux, cfg *config.Config, log *slog.Logger) *http.Server {
 	srv := &http.Server{
 		Addr:              cfg.Address,
 		Handler:           router,
@@ -212,6 +244,7 @@ func startHTTPServer(router *chi.Mux, cfg *config.Config, log *slog.Logger) {
 	}()
 
 	log.Info("HTTP server started", slog.String("addr", cfg.Address))
+	return srv
 }
 
 // initializeSnifferState creates the sniffer state tracker
@@ -238,13 +271,17 @@ func createStartSnifferCallback(
 			slog.Any("filters", filters))
 
 		// Stop existing sniffer if running
-		if state.currentPacketStream != nil && state.currentStopChan != nil {
+		if state.currentPacketStream != nil {
 			log.Info("Stopping existing sniffer before restart")
 			if err := metricsService.Stop(); err != nil {
 				log.Warn("Failed to stop metrics", sl.Err(err))
 			}
+			if state.currentBroadcaster != nil {
+				state.currentBroadcaster.Stop()
+				state.currentBroadcaster = nil
+			}
 			state.currentStopChan <- true
-			time.Sleep(500 * time.Millisecond)
+			<-state.currentPacketStream.Done
 		}
 
 		// Start new sniffer
@@ -260,6 +297,7 @@ func createStartSnifferCallback(
 		// Initialize broadcaster and connect services
 		bcast := broadcaster.NewPacketBroadcaster(stream, log)
 		bcast.Start()
+		state.currentBroadcaster = bcast
 
 		// Start console writer
 		if cfg.EnableConsoleWriter {

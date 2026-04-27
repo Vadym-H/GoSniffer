@@ -16,6 +16,7 @@ type PacketStream struct {
 	Packets chan gopacket.Packet
 	Errors  chan error
 	Stop    chan bool
+	Done    chan struct{} // closed when the capture loop has fully exited
 }
 
 type captureStats struct {
@@ -74,10 +75,12 @@ func newPacketStream() *PacketStream {
 		Packets: make(chan gopacket.Packet, 1000),
 		Errors:  make(chan error, 10),
 		Stop:    make(chan bool),
+		Done:    make(chan struct{}),
 	}
 }
 
 func captureLoop(handle *pcap.Handle, stream *PacketStream, stats *captureStats, log *slog.Logger) {
+	defer close(stream.Done) // must be deferred first so it closes last
 	defer handle.Close()
 	defer close(stream.Packets)
 	defer close(stream.Errors)
