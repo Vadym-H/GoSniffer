@@ -1,6 +1,7 @@
 package config
 
 import (
+	"flag"
 	"log"
 	"os"
 	"time"
@@ -44,7 +45,11 @@ func MustLoad() *Config {
 		log.Println("No .env file found, using system environment variables")
 	}
 
-	configPath := os.Getenv("CONFIG_PATH")
+	// Parse flags to allow overriding env vars with command-line arguments
+	flag.Parse()
+
+	// Get config path
+	configPath := fetchConfigPath()
 	if configPath == "" {
 		log.Fatal("CONFIG_PATH is not set")
 	}
@@ -59,11 +64,13 @@ func MustLoad() *Config {
 		log.Fatalf("Failed to load config: %s", err)
 	}
 
-	password := os.Getenv("APP_PASSWORD")
+	// Get application password
+	password := fetchAppPassword()
 	if password == "" {
 		log.Fatal("APP_PASSWORD is not set")
 	}
 
+	// Hash password, and store to config structure
 	hash, err := bcrypt.GenerateFromPassword(
 		[]byte(password),
 		bcrypt.DefaultCost,
@@ -74,4 +81,22 @@ func MustLoad() *Config {
 
 	cfg.PasswordHash = hash
 	return &cfg
+}
+
+func fetchConfigPath() string {
+	res := os.Getenv("CONFIG_PATH")
+	if res == "" {
+		// try to get path from flag
+		flag.StringVar(&res, "config", "", "Path to configuration file")
+	}
+	return res
+}
+
+func fetchAppPassword() string {
+	res := os.Getenv("APP_PASSWORD")
+	if res == "" {
+		// try to get path from flag
+		flag.StringVar(&res, "password", "", "Application password, one password for all users")
+	}
+	return res
 }

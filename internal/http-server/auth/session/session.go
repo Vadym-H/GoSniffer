@@ -15,13 +15,15 @@ func NewSessionStore() *StoreSession {
 	}
 }
 
+// Add adds a token to the session store
 func (s *StoreSession) Add(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tokens[token] = struct{}{}
 }
 
-func (s *StoreSession) Valid(token string) bool {
+// IsValid checks if a token is valid
+func (s *StoreSession) IsValid(token string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, ok := s.tokens[token]

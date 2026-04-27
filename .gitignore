@@ -7,3 +7,6 @@ vendor/
 *.pcap
 *.csv
 *.json
+
+*.md
+!Readme.md

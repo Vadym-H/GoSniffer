@@ -1,6 +1,7 @@
 package config
 
 import (
+	"flag"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,7 +58,7 @@ http_server:
 			},
 		},
 		{
-			name: "config with default env and processor workers",
+			name: "config with default values",
 			configContent: `filters:
   protocols:
     tcp: true
@@ -121,7 +122,7 @@ http_server:
 			},
 		},
 		{
-			name: "config with env override from environment variable",
+			name: "env override",
 			configContent: `filters:
   protocols:
     tcp: false
@@ -150,22 +151,22 @@ http_server:
 			},
 		},
 		{
-			name: "config with multiple ports and filters",
+			name: "config with multiple ports",
 			configContent: `env: development
-processor_workers: 6
-filters:
-  protocols:
-    tcp: true
-    udp: true
-    icmp: false
-    dns: true
-  src_ip: "0.0.0.0"
-  dst_ip: "255.255.255.255"
-  ports: "22,80,443,3000,8080,9090"
-http_server:
-  address: ":8000"
-  timeout: 10s
-  idle_timeout: 180s`,
+			processor_workers: 6
+			filters:
+			  protocols:
+				tcp: true
+				udp: true
+				icmp: false
+				dns: true
+			  src_ip: "0.0.0.0"
+			  dst_ip: "255.255.255.255"
+			  ports: "22,80,443,3000,8080,9090"
+			http_server:
+			  address: ":8000"
+			  timeout: 10s
+			  idle_timeout: 180s`,
 			envVars: map[string]string{},
 			expectedConfig: &Config{
 				Env:              "development",
@@ -192,35 +193,36 @@ http_server:
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create temporary directory and config file
+			// СБРОС ГЛОБАЛЬНЫХ ФЛАГОВ
+			flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+			os.Args = []string{os.Args[0]}
+
+			// temp config file
 			tmpDir := t.TempDir()
 			configPath := filepath.Join(tmpDir, "config.yaml")
 
 			err := os.WriteFile(configPath, []byte(tt.configContent), 0644)
 			require.NoError(t, err)
 
-			// Set CONFIG_PATH environment variable
+			// env
 			os.Setenv("CONFIG_PATH", configPath)
 			defer os.Unsetenv("CONFIG_PATH")
 
-			// Set APP_PASSWORD for password hashing
 			os.Setenv("APP_PASSWORD", "testpassword123")
 			defer os.Unsetenv("APP_PASSWORD")
 
-			// Set additional environment variables
 			for key, value := range tt.envVars {
 				os.Setenv(key, value)
 				defer os.Unsetenv(key)
 			}
 
-			// Load config
 			cfg := MustLoad()
 
-			// Assertions for basic fields
+			// basic
 			assert.Equal(t, tt.expectedConfig.Env, cfg.Env)
 			assert.Equal(t, tt.expectedConfig.ProcessorWorkers, cfg.ProcessorWorkers)
 
-			// Assertions for filters
+			// filters
 			assert.Equal(t, tt.expectedConfig.Filters.Protocols.TCP, cfg.Filters.Protocols.TCP)
 			assert.Equal(t, tt.expectedConfig.Filters.Protocols.UDP, cfg.Filters.Protocols.UDP)
 			assert.Equal(t, tt.expectedConfig.Filters.Protocols.ICMP, cfg.Filters.Protocols.ICMP)
@@ -229,12 +231,12 @@ http_server:
 			assert.Equal(t, tt.expectedConfig.Filters.DstIP, cfg.Filters.DstIP)
 			assert.Equal(t, tt.expectedConfig.Filters.Ports, cfg.Filters.Ports)
 
-			// Assertions for HTTP server
+			// http
 			assert.Equal(t, tt.expectedConfig.HTTPServer.Address, cfg.HTTPServer.Address)
 			assert.Equal(t, tt.expectedConfig.HTTPServer.Timeout, cfg.HTTPServer.Timeout)
 			assert.Equal(t, tt.expectedConfig.HTTPServer.IdleTimeout, cfg.HTTPServer.IdleTimeout)
 
-			// Assert password hash is set
+			// password hash
 			assert.NotNil(t, cfg.PasswordHash)
 			assert.True(t, len(cfg.PasswordHash) > 0)
 		})
