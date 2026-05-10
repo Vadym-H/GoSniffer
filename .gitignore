@@ -10,4 +10,4 @@ vendor/
 
 *.md
 !Readme.md
-GoSniffer
+/GoSniffer
