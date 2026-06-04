@@ -39,6 +39,12 @@ func (c *ConsoleWriter) WritePacket(packet gopacket.Packet, count int) {
 	}
 }
 
+func (c *ConsoleWriter) WriteBatch(packets []gopacket.Packet, startCount int) {
+	for i, pkt := range packets {
+		c.WritePacket(pkt, startCount+i)
+	}
+}
+
 func PrintPacket(packet gopacket.Packet, count int) {
 	fmt.Printf("\n=== Packet #%d ===\n", count)
 	fmt.Printf("Timestamp: %s\n", packet.Metadata().Timestamp)

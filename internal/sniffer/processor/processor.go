@@ -10,6 +10,8 @@ import (
 	"github.com/google/gopacket"
 )
 
+const batchSize = 100
+
 type PacketProcessor struct {
 	numWorkers  int
 	log         *slog.Logger
@@ -67,27 +69,44 @@ func (p *PacketProcessor) worker(id int, packets <-chan gopacket.Packet) {
 
 	log.Info("Worker started")
 
+	batch := make([]gopacket.Packet, 0, batchSize)
+
 	for {
+		batch = batch[:0]
+
+		// Block until the first packet arrives or stop is signalled.
 		select {
 		case <-p.stopChan:
 			log.Info("Worker stopping")
 			return
-		case packet, ok := <-packets:
+		case pkt, ok := <-packets:
 			if !ok {
 				log.Info("Packet channel closed, worker stopping")
 				return
 			}
-			p.processPacket(packet)
+			batch = append(batch, pkt)
 		}
+
+		// Non-blocking drain: collect up to batchSize-1 more packets that are
+		// already queued, so we write them under a single lock acquisition.
+	drain:
+		for len(batch) < batchSize {
+			select {
+			case pkt, ok := <-packets:
+				if !ok {
+					break drain
+				}
+				batch = append(batch, pkt)
+			default:
+				break drain
+			}
+		}
+
+		// Atomically reserve a contiguous range of packet numbers for this batch.
+		end := p.packetCount.Add(int64(len(batch)))
+		startCount := int(end) - len(batch) + 1
+		p.writer.WriteBatch(batch, startCount)
 	}
-}
-
-func (p *PacketProcessor) processPacket(packet gopacket.Packet) {
-	// Increment packet count atomically
-	count := p.packetCount.Add(1)
-
-	// Process the packet
-	p.writer.WritePacket(packet, int(count))
 }
 
 func (p *PacketProcessor) handleErrors(stream *capture.PacketStream) {

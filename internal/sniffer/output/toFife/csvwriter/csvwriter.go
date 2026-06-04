@@ -35,84 +35,42 @@ type CSVWriter struct {
 	interfaceMAC net.HardwareAddr
 }
 
-func (w *CSVWriter) WritePacket(pkt gopacket.Packet, count int) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	// Check if capture is stopped or expired
-	if w.Stopped || w.Writer == nil {
-		w.Log.Debug("Packet received but writer is stopped or nil", slog.Int("packet_count", count))
-		return
-	}
-
-	// Check if duration has elapsed
-	if w.Duration > 0 && time.Since(w.StartTime) >= w.Duration {
-		w.Log.Warn("Capture duration reached, stopping writes",
-			slog.Int("packets_written", w.packetCount),
-			slog.Int64("bytes_written", w.bytesWritten),
-			slog.Duration("elapsed", time.Since(w.StartTime)))
-		w.Stopped = true
-		w.Cancel()
-		return
-	}
-
-	// Extract packet information
-	packetSize := len(pkt.Data())
-	timestamp := pkt.Metadata().Timestamp.Format("2006-01-02 15:04:05.000000")
-
-	// Initialize row with basic info
-	row := []string{
+// buildRow parses a packet into a CSV row. Called outside any lock.
+func (w *CSVWriter) buildRow(pkt gopacket.Packet, count int) (row []string, size int) {
+	size = len(pkt.Data())
+	row = []string{
 		fmt.Sprintf("%d", count),
-		timestamp,
-		fmt.Sprintf("%d", packetSize),
+		pkt.Metadata().Timestamp.Format("2006-01-02 15:04:05.000000"),
+		fmt.Sprintf("%d", size),
 	}
 
-	// Ethernet Layer - determine direction (outbound/inbound/broadcast/unknown)
 	direction := "unknown"
 	if ethLayer := pkt.Layer(layers.LayerTypeEthernet); ethLayer != nil {
 		eth := ethLayer.(*layers.Ethernet)
-		row = append(row,
-			eth.SrcMAC.String(),
-			eth.DstMAC.String(),
-			eth.EthernetType.String(),
-		)
-
-		// Determine direction based on MAC addresses
-		dstMAC := eth.DstMAC.String()
-		srcMAC := eth.SrcMAC.String()
-
-		if dstMAC == "ff:ff:ff:ff:ff:ff" {
+		row = append(row, eth.SrcMAC.String(), eth.DstMAC.String(), eth.EthernetType.String())
+		switch {
+		case eth.DstMAC.String() == "ff:ff:ff:ff:ff:ff":
 			direction = "broadcast"
-		} else if srcMAC == w.interfaceMAC.String() {
+		case eth.SrcMAC.String() == w.interfaceMAC.String():
 			direction = "outbound"
-		} else if dstMAC == w.interfaceMAC.String() {
+		case eth.DstMAC.String() == w.interfaceMAC.String():
 			direction = "inbound"
-		} else {
-			direction = "unknown"
 		}
 	} else {
 		row = append(row, "", "", "")
 	}
 	row = append(row, direction)
 
-	// IP Layer
 	var srcIP, dstIP, protocol, ttl string
 	if ipv4Layer := pkt.Layer(layers.LayerTypeIPv4); ipv4Layer != nil {
 		ipv4 := ipv4Layer.(*layers.IPv4)
-		srcIP = ipv4.SrcIP.String()
-		dstIP = ipv4.DstIP.String()
-		protocol = ipv4.Protocol.String()
-		ttl = fmt.Sprintf("%d", ipv4.TTL)
+		srcIP, dstIP, protocol, ttl = ipv4.SrcIP.String(), ipv4.DstIP.String(), ipv4.Protocol.String(), fmt.Sprintf("%d", ipv4.TTL)
 	} else if ipv6Layer := pkt.Layer(layers.LayerTypeIPv6); ipv6Layer != nil {
 		ipv6 := ipv6Layer.(*layers.IPv6)
-		srcIP = ipv6.SrcIP.String()
-		dstIP = ipv6.DstIP.String()
-		protocol = ipv6.NextHeader.String()
-		ttl = fmt.Sprintf("%d", ipv6.HopLimit)
+		srcIP, dstIP, protocol, ttl = ipv6.SrcIP.String(), ipv6.DstIP.String(), ipv6.NextHeader.String(), fmt.Sprintf("%d", ipv6.HopLimit)
 	}
 	row = append(row, srcIP, dstIP, protocol, ttl)
 
-	// TCP/UDP Layer
 	var srcPort, dstPort, tcpFlags, tcpSeq, tcpAck string
 	if tcpLayer := pkt.Layer(layers.LayerTypeTCP); tcpLayer != nil {
 		tcp := tcpLayer.(*layers.TCP)
@@ -127,33 +85,55 @@ func (w *CSVWriter) WritePacket(pkt gopacket.Packet, count int) {
 		dstPort = fmt.Sprintf("%d", udp.DstPort)
 	}
 	row = append(row, srcPort, dstPort, tcpFlags, tcpSeq, tcpAck)
+	return row, size
+}
 
-	// Write the row
-	err := w.Writer.Write(row)
-	if err != nil {
-		w.Log.Error("Failed to write packet to CSV",
-			slog.String("error", err.Error()),
-			slog.Int("packet_count", count),
-			slog.Int("packet_size", packetSize),
-			slog.Int("total_packets_written", w.packetCount))
+// WriteBatch parses all packets outside the lock, then acquires the lock once
+// to write the entire batch. This lets multiple workers parse in parallel while
+// only serializing on the actual file write.
+func (w *CSVWriter) WriteBatch(packets []gopacket.Packet, startCount int) {
+	type parsed struct {
+		row  []string
+		size int
+	}
+
+	rows := make([]parsed, 0, len(packets))
+	for i, pkt := range packets {
+		row, size := w.buildRow(pkt, startCount+i)
+		rows = append(rows, parsed{row, size})
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.Stopped || w.Writer == nil {
+		return
+	}
+	if w.Duration > 0 && time.Since(w.StartTime) >= w.Duration {
+		w.Stopped = true
+		w.Cancel()
 		return
 	}
 
-	w.packetCount++
-	w.bytesWritten += int64(packetSize)
-
-	// Flush every 100 packets to ensure data is written
-	if w.packetCount%100 == 0 {
-		w.Writer.Flush()
-		if err := w.Writer.Error(); err != nil {
-			w.Log.Error("CSV writer flush error",
-				slog.String("error", err.Error()),
-				slog.Int("packets_written", w.packetCount))
+	totalBytes := 0
+	for _, r := range rows {
+		if err := w.Writer.Write(r.row); err != nil {
+			w.Log.Error("Failed to write packet to CSV", slog.String("error", err.Error()))
+			return
 		}
+		totalBytes += r.size
 	}
 
-	// Log every 1000 packets
-	if w.packetCount%1000 == 0 {
+	prev := w.packetCount
+	w.packetCount += len(rows)
+	w.bytesWritten += int64(totalBytes)
+
+	w.Writer.Flush()
+	if err := w.Writer.Error(); err != nil {
+		w.Log.Error("CSV writer flush error", slog.String("error", err.Error()))
+	}
+
+	if w.packetCount/1000 > prev/1000 {
 		w.Log.Debug("Progress update",
 			slog.Int("packets_written", w.packetCount),
 			slog.Int64("bytes_written", w.bytesWritten),
@@ -161,8 +141,12 @@ func (w *CSVWriter) WritePacket(pkt gopacket.Packet, count int) {
 	}
 }
 
+func (w *CSVWriter) WritePacket(pkt gopacket.Packet, count int) {
+	w.WriteBatch([]gopacket.Packet{pkt}, count)
+}
+
 func (w *CSVWriter) SupportsConcurrentWrites() bool {
-	return true // Safe with mutex protection
+	return true
 }
 
 // Stop manually stops packet capture before duration expires

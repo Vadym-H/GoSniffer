@@ -57,155 +57,115 @@ type JSONWriter struct {
 	isFirstPacket bool
 }
 
-func (w *JSONWriter) WritePacket(pkt gopacket.Packet, count int) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+// buildPacketData parses a packet into a PacketData struct. Called outside any lock.
+func (w *JSONWriter) buildPacketData(pkt gopacket.Packet, count int) PacketData {
+	data := PacketData{
+		PacketNumber: count,
+		Timestamp:    pkt.Metadata().Timestamp.Format("2006-01-02 15:04:05.000000"),
+		Length:       len(pkt.Data()),
+	}
 
-	// Check if capture is stopped or expired
-	if w.Stopped || w.Writer == nil {
-		w.Log.Debug("Packet received but writer is stopped or nil", slog.Int("packet_count", count))
+	direction := "unknown"
+	if ethLayer := pkt.Layer(layers.LayerTypeEthernet); ethLayer != nil {
+		eth := ethLayer.(*layers.Ethernet)
+		data.SrcMAC = eth.SrcMAC.String()
+		data.DstMAC = eth.DstMAC.String()
+		data.EtherType = eth.EthernetType.String()
+		switch {
+		case eth.DstMAC.String() == "ff:ff:ff:ff:ff:ff":
+			direction = "broadcast"
+		case eth.SrcMAC.String() == w.interfaceMAC.String():
+			direction = "outbound"
+		case eth.DstMAC.String() == w.interfaceMAC.String():
+			direction = "inbound"
+		}
+	}
+	data.Direction = direction
+
+	if ipv4Layer := pkt.Layer(layers.LayerTypeIPv4); ipv4Layer != nil {
+		ipv4 := ipv4Layer.(*layers.IPv4)
+		data.SrcIP = ipv4.SrcIP.String()
+		data.DstIP = ipv4.DstIP.String()
+		data.Protocol = ipv4.Protocol.String()
+		data.TTLHopLimit = fmt.Sprintf("%d", ipv4.TTL)
+	} else if ipv6Layer := pkt.Layer(layers.LayerTypeIPv6); ipv6Layer != nil {
+		ipv6 := ipv6Layer.(*layers.IPv6)
+		data.SrcIP = ipv6.SrcIP.String()
+		data.DstIP = ipv6.DstIP.String()
+		data.Protocol = ipv6.NextHeader.String()
+		data.TTLHopLimit = fmt.Sprintf("%d", ipv6.HopLimit)
+	}
+
+	if tcpLayer := pkt.Layer(layers.LayerTypeTCP); tcpLayer != nil {
+		tcp := tcpLayer.(*layers.TCP)
+		data.SrcPort = fmt.Sprintf("%d", tcp.SrcPort)
+		data.DstPort = fmt.Sprintf("%d", tcp.DstPort)
+		data.TCPFlags = formatTCPFlags(tcp)
+		data.TCPSequence = fmt.Sprintf("%d", tcp.Seq)
+		data.TCPAck = fmt.Sprintf("%d", tcp.Ack)
+	} else if udpLayer := pkt.Layer(layers.LayerTypeUDP); udpLayer != nil {
+		udp := udpLayer.(*layers.UDP)
+		data.SrcPort = fmt.Sprintf("%d", udp.SrcPort)
+		data.DstPort = fmt.Sprintf("%d", udp.DstPort)
+	}
+
+	return data
+}
+
+// WriteBatch marshals all packets outside the lock, then acquires the lock once
+// to write the entire batch. This lets multiple workers marshal in parallel while
+// only serializing on the actual file write.
+func (w *JSONWriter) WriteBatch(packets []gopacket.Packet, startCount int) {
+	type parsed struct {
+		jsonBytes []byte
+	}
+
+	items := make([]parsed, 0, len(packets))
+	for i, pkt := range packets {
+		b, err := json.Marshal(w.buildPacketData(pkt, startCount+i))
+		if err != nil {
+			w.Log.Error("Failed to marshal packet to JSON", slog.String("error", err.Error()))
+			continue
+		}
+		items = append(items, parsed{b})
+	}
+
+	if len(items) == 0 {
 		return
 	}
 
-	// Check if duration has elapsed
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.Stopped || w.Writer == nil {
+		return
+	}
 	if w.Duration > 0 && time.Since(w.StartTime) >= w.Duration {
-		w.Log.Warn("Capture duration reached, stopping writes",
-			slog.Int("packets_written", w.packetCount),
-			slog.Int64("bytes_written", w.bytesWritten),
-			slog.Duration("elapsed", time.Since(w.StartTime)))
 		w.Stopped = true
 		w.Cancel()
 		return
 	}
 
-	// Extract packet information
-	packetSize := len(pkt.Data())
-	timestamp := pkt.Metadata().Timestamp.Format("2006-01-02 15:04:05.000000")
-
-	packetData := PacketData{
-		PacketNumber: count,
-		Timestamp:    timestamp,
-		Length:       packetSize,
-	}
-
-	// Ethernet Layer - determine direction (outbound/inbound/broadcast/unknown)
-	direction := "unknown"
-	if ethLayer := pkt.Layer(layers.LayerTypeEthernet); ethLayer != nil {
-		eth := ethLayer.(*layers.Ethernet)
-		packetData.SrcMAC = eth.SrcMAC.String()
-		packetData.DstMAC = eth.DstMAC.String()
-		packetData.EtherType = eth.EthernetType.String()
-
-		// Determine direction based on MAC addresses
-		dstMAC := eth.DstMAC.String()
-		srcMAC := eth.SrcMAC.String()
-
-		if dstMAC == "ff:ff:ff:ff:ff:ff" {
-			direction = "broadcast"
-		} else if srcMAC == w.interfaceMAC.String() {
-			direction = "outbound"
-		} else if dstMAC == w.interfaceMAC.String() {
-			direction = "inbound"
-		} else {
-			direction = "unknown"
+	for i, item := range items {
+		// Comma before every entry except the very first packet written to the file.
+		if !w.isFirstPacket || i > 0 {
+			w.Writer.WriteByte(',')
 		}
-	}
-	packetData.Direction = direction
-
-	// IP Layer
-	if ipv4Layer := pkt.Layer(layers.LayerTypeIPv4); ipv4Layer != nil {
-		ipv4 := ipv4Layer.(*layers.IPv4)
-		packetData.SrcIP = ipv4.SrcIP.String()
-		packetData.DstIP = ipv4.DstIP.String()
-		packetData.Protocol = ipv4.Protocol.String()
-		packetData.TTLHopLimit = fmt.Sprintf("%d", ipv4.TTL)
-	} else if ipv6Layer := pkt.Layer(layers.LayerTypeIPv6); ipv6Layer != nil {
-		ipv6 := ipv6Layer.(*layers.IPv6)
-		packetData.SrcIP = ipv6.SrcIP.String()
-		packetData.DstIP = ipv6.DstIP.String()
-		packetData.Protocol = ipv6.NextHeader.String()
-		packetData.TTLHopLimit = fmt.Sprintf("%d", ipv6.HopLimit)
+		w.Writer.WriteByte('\n')
+		w.Writer.WriteString("    ")
+		w.Writer.Write(item.jsonBytes)
+		w.bytesWritten += int64(len(item.jsonBytes))
 	}
 
-	// TCP/UDP Layer
-	if tcpLayer := pkt.Layer(layers.LayerTypeTCP); tcpLayer != nil {
-		tcp := tcpLayer.(*layers.TCP)
-		packetData.SrcPort = fmt.Sprintf("%d", tcp.SrcPort)
-		packetData.DstPort = fmt.Sprintf("%d", tcp.DstPort)
-		packetData.TCPFlags = formatTCPFlags(tcp)
-		packetData.TCPSequence = fmt.Sprintf("%d", tcp.Seq)
-		packetData.TCPAck = fmt.Sprintf("%d", tcp.Ack)
-	} else if udpLayer := pkt.Layer(layers.LayerTypeUDP); udpLayer != nil {
-		udp := udpLayer.(*layers.UDP)
-		packetData.SrcPort = fmt.Sprintf("%d", udp.SrcPort)
-		packetData.DstPort = fmt.Sprintf("%d", udp.DstPort)
-	}
-
-	// Marshal to JSON and write
-	jsonBytes, err := json.Marshal(packetData)
-	if err != nil {
-		w.Log.Error("Failed to marshal packet to JSON",
-			slog.String("error", err.Error()),
-			slog.Int("packet_count", count))
-		return
-	}
-
-	// Write comma separator (except for first packet)
-	if !w.isFirstPacket {
-		err = w.Writer.WriteByte(',')
-		if err != nil {
-			w.Log.Error("Failed to write comma separator to JSON",
-				slog.String("error", err.Error()),
-				slog.Int("packet_count", count))
-			return
-		}
-	}
-
-	// Write newline before object for formatting
-	err = w.Writer.WriteByte('\n')
-	if err != nil {
-		w.Log.Error("Failed to write newline before JSON object",
-			slog.String("error", err.Error()),
-			slog.Int("packet_count", count))
-		return
-	}
-
-	// Write indentation
-	_, err = w.Writer.WriteString("    ")
-	if err != nil {
-		w.Log.Error("Failed to write indentation to JSON",
-			slog.String("error", err.Error()),
-			slog.Int("packet_count", count))
-		return
-	}
-
-	// Write JSON object
-	_, err = w.Writer.Write(jsonBytes)
-	if err != nil {
-		w.Log.Error("Failed to write packet to JSON",
-			slog.String("error", err.Error()),
-			slog.Int("packet_count", count),
-			slog.Int("packet_size", packetSize),
-			slog.Int("total_packets_written", w.packetCount))
-		return
-	}
-
-	w.packetCount++
-	w.bytesWritten += int64(len(jsonBytes))
+	prev := w.packetCount
+	w.packetCount += len(items)
 	w.isFirstPacket = false
 
-	// Flush every 100 packets to ensure data is written
-	if w.packetCount%100 == 0 {
-		err := w.Writer.Flush()
-		if err != nil {
-			w.Log.Error("JSON writer flush error",
-				slog.String("error", err.Error()),
-				slog.Int("packets_written", w.packetCount))
-		}
+	if err := w.Writer.Flush(); err != nil {
+		w.Log.Error("JSON writer flush error", slog.String("error", err.Error()))
 	}
 
-	// Log every 1000 packets
-	if w.packetCount%1000 == 0 {
+	if w.packetCount/1000 > prev/1000 {
 		w.Log.Debug("Progress update",
 			slog.Int("packets_written", w.packetCount),
 			slog.Int64("bytes_written", w.bytesWritten),
@@ -213,8 +173,12 @@ func (w *JSONWriter) WritePacket(pkt gopacket.Packet, count int) {
 	}
 }
 
+func (w *JSONWriter) WritePacket(pkt gopacket.Packet, count int) {
+	w.WriteBatch([]gopacket.Packet{pkt}, count)
+}
+
 func (w *JSONWriter) SupportsConcurrentWrites() bool {
-	return true // Safe with mutex protection
+	return true
 }
 
 // Stop manually stops packet capture before duration expires

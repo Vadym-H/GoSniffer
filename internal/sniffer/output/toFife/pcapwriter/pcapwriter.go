@@ -79,6 +79,35 @@ func (w *PcapWriter) WritePacket(pkt gopacket.Packet, count int) {
 	}
 }
 
+func (w *PcapWriter) WriteBatch(packets []gopacket.Packet, startCount int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.stopped || w.writer == nil {
+		return
+	}
+	if w.duration > 0 && time.Since(w.startTime) >= w.duration {
+		w.stopped = true
+		w.cancel()
+		return
+	}
+
+	for _, pkt := range packets {
+		if err := w.writer.WritePacket(pkt.Metadata().CaptureInfo, pkt.Data()); err != nil {
+			w.log.Error("Failed to write packet to PCAP", slog.String("error", err.Error()))
+			return
+		}
+		w.packetCount++
+		w.bytesWritten += int64(len(pkt.Data()))
+		if w.packetCount%1000 == 0 {
+			w.log.Debug("Progress update",
+				slog.Int("packets_written", w.packetCount),
+				slog.Int64("bytes_written", w.bytesWritten),
+				slog.Duration("elapsed", time.Since(w.startTime)))
+		}
+	}
+}
+
 func (w *PcapWriter) SupportsConcurrentWrites() bool {
 	return false // PCAP format requires sequential writes to maintain integrity
 }
