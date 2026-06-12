@@ -9,6 +9,7 @@ vendor/
 *.json
 !frontend/package.json
 !frontend/package-lock.json
+!frontend/tsconfig.json
 
 *.md
 !Readme.md
